@@ -1,0 +1,12 @@
+# BelTu-Agent scan output (may contain sensitive target data)
+recon_*/
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Local env overrides
+.env
