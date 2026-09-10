@@ -2,7 +2,7 @@
 #
 # ============================================================================
 # BelTu-Agent — Recon & Vulnerability Scanning Orchestrator
-# Version: 1.1.0
+# Version: 1.1.1
 # Purpose: Authorized security testing / bug bounty recon automation ONLY.
 # ============================================================================
 
@@ -10,7 +10,7 @@ set -uo pipefail
 IFS=$'\n\t'
 
 SCRIPT_NAME="BelTu-Agent"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 SCRIPT_COMMAND="beltu"
 
 GOBIN_DIR="${GOBIN:-${GOPATH:-$HOME/go}/bin}"
@@ -31,6 +31,9 @@ RUN_TIMESTAMP=""
 STARTED_EPOCH=0
 STARTED_ISO=""
 FINISHED_EPOCH=0
+ACCUMULATED_DURATION=0
+ORIGINAL_STARTED_ISO=""
+RESUME_COUNT=0
 
 MODE_DEEP=0
 MODE_URL=0
@@ -43,6 +46,13 @@ RATE_LIMIT=5
 TIMEOUT=10
 RETRIES=1
 MAX_INJECTION_TARGETS=20
+
+# Conservative upper bounds for numeric controls.
+MAX_THREADS=100
+MAX_RATE_LIMIT=1000
+MAX_TIMEOUT=300
+MAX_RETRIES=5
+MAX_INJECTION_TARGETS_LIMIT=100
 
 DRY_RUN=0
 NO_INSTALL=0
@@ -125,7 +135,7 @@ Target / scope:
 
 Execution:
       --threads N      Concurrency hint (default: $THREADS)
-      --rate-limit N   Global requests/sec where supported (default: $RATE_LIMIT)
+      --rate-limit N   Per-tool request rate/concurrency control where supported (default: $RATE_LIMIT)
       --timeout N      Request/tool timeout in seconds (default: $TIMEOUT)
       --retries N      Retries where supported (default: $RETRIES)
       --max-injection-targets N
@@ -208,16 +218,36 @@ trim_ws() {
 
 is_integer() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
-validate_positive_int() {
-    local name="$1" value="$2" allow_zero="$3"
-    if ! is_integer "$value"; then
-        err "$name must be a non-negative integer: '$value'"
+validate_bounded_int() {
+    local name="$1" var_name="$2" min="$3" max="$4" value raw
+    raw="${!var_name}"
+    if ! is_integer "$raw"; then
+        err "$name must be an integer between $min and $max: '$raw'"
         return 1
     fi
-    if (( allow_zero == 0 && value == 0 )); then
-        err "$name must be greater than zero."
+    value="$(printf '%s' "$raw" | sed 's/^0*//')"
+    [[ -n "$value" ]] || value=0
+    # Keep arithmetic operands small enough to avoid shell integer overflow.
+    if (( ${#value} > ${#max} )); then
+        err "$name must be between $min and $max: '$raw'"
         return 1
     fi
+    if (( value < min || value > max )); then
+        err "$name must be between $min and $max: '$raw'"
+        return 1
+    fi
+    printf -v "$2" '%s' "$value"
+    return 0
+}
+
+validate_runtime_options() {
+    validate_bounded_int "--threads" THREADS 1 "$MAX_THREADS" || return 1
+    validate_bounded_int "--rate-limit" RATE_LIMIT 1 "$MAX_RATE_LIMIT" || return 1
+    validate_bounded_int "--timeout" TIMEOUT 1 "$MAX_TIMEOUT" || return 1
+    validate_bounded_int "--retries" RETRIES 0 "$MAX_RETRIES" || return 1
+    validate_bounded_int "--max-injection-targets" MAX_INJECTION_TARGETS 1 "$MAX_INJECTION_TARGETS_LIMIT" || return 1
+    case "$NO_INSTALL" in 0|1) ;; *) err "NO_INSTALL must be 0 or 1."; return 1 ;; esac
+    case "$VERBOSE" in 0|1) ;; *) err "VERBOSE must be 0 or 1."; return 1 ;; esac
     return 0
 }
 
@@ -486,22 +516,24 @@ write_run_json() {
     (( FINISHED_EPOCH > 0 )) && finished_at="$(utc_iso)"
     if (( STARTED_EPOCH > 0 )); then
         if (( FINISHED_EPOCH > 0 )); then
-            duration="$(elapsed_seconds "$STARTED_EPOCH" "$FINISHED_EPOCH")"
+            duration="$((ACCUMULATED_DURATION + FINISHED_EPOCH - STARTED_EPOCH))"
         else
-            duration="$(elapsed_seconds "$STARTED_EPOCH" "$(date +%s)")"
+            duration="$((ACCUMULATED_DURATION + $(date +%s) - STARTED_EPOCH))"
         fi
     else
-        duration="0"
+        duration="$ACCUMULATED_DURATION"
     fi
     status="$(aggregate_status)"
     [[ -n "$STARTED_ISO" ]] || STARTED_ISO="$(utc_iso)"
+    [[ -n "$ORIGINAL_STARTED_ISO" ]] || ORIGINAL_STARTED_ISO="$STARTED_ISO"
 
     {
         printf '{\n'
         printf '  "tool": "%s",\n' "$(json_escape "$SCRIPT_NAME")"
         printf '  "version": "%s",\n' "$(json_escape "$SCRIPT_VERSION")"
         printf '  "target": "%s",\n' "$(json_escape "$TARGET")"
-        printf '  "started_at": "%s",\n' "$(json_escape "$STARTED_ISO")"
+        printf '  "started_at": "%s",\n' "$(json_escape "$ORIGINAL_STARTED_ISO")"
+        printf '  "resume_count": %s,\n' "$RESUME_COUNT"
         printf '  "finished_at": "%s",\n' "$(json_escape "$finished_at")"
         printf '  "mode": "%s",\n' "$(json_escape "$(mode_label)")"
         printf '  "status": "%s",\n' "$(json_escape "$status")"
@@ -553,6 +585,9 @@ setup_new_run() {
     fi
     STARTED_EPOCH="$(date +%s)"
     STARTED_ISO="$(utc_iso)"
+    ORIGINAL_STARTED_ISO="$STARTED_ISO"
+    ACCUMULATED_DURATION=0
+    RESUME_COUNT=0
     write_config_snapshot || return 1
     write_run_json
 }
@@ -573,8 +608,15 @@ load_resume_run() {
         SCOPE_FILE="$run_dir/metadata/scope.txt"
     fi
 
+    ORIGINAL_STARTED_ISO="$(sed -n 's/^[[:space:]]*"started_at":[[:space:]]*"\([^"]*\)".*/\1/p' "$run_dir/metadata/run.json" 2>/dev/null | head -n 1 || true)"
+    local previous_duration previous_runs
+    previous_duration="$(sed -n 's/^[[:space:]]*"duration_seconds":[[:space:]]*\([0-9][0-9]*\),\{0,1\}.*/\1/p' "$run_dir/metadata/run.json" 2>/dev/null | head -n 1 || true)"
+    previous_runs="$(sed -n 's/^[[:space:]]*"resume_count":[[:space:]]*\([0-9][0-9]*\),\{0,1\}.*/\1/p' "$run_dir/metadata/run.json" 2>/dev/null | head -n 1 || true)"
+    [[ "$previous_duration" =~ ^[0-9]+$ ]] && ACCUMULATED_DURATION="$previous_duration" || ACCUMULATED_DURATION=0
+    [[ "$previous_runs" =~ ^[0-9]+$ ]] && RESUME_COUNT=$((previous_runs + 1)) || RESUME_COUNT=1
     STARTED_EPOCH="$(date +%s)"
-    STARTED_ISO="$(utc_iso)"
+    STARTED_ISO="$ORIGINAL_STARTED_ISO"
+    [[ -n "$STARTED_ISO" ]] || STARTED_ISO="$(utc_iso)"
     DEEP_STATUS="$(module_current_status deep_enum)"
     URL_STATUS="$(module_current_status url_crawl)"
     VULN_STATUS="$(module_current_status vuln_scan)"
@@ -890,11 +932,32 @@ tool_identity_ok() {
     esac
 }
 
+tool_compatibility_ok() {
+    local tool="$1" help_text
+    case "$tool" in
+        subfinder) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-d"* && "$help_text" == *"-o"* && "$help_text" == *"-timeout"* && "$help_text" == *"-max-time"* ]] ;;
+        assetfinder) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"--subs-only"* ]] ;;
+        amass) help_text="$("$tool" enum -h 2>&1 || true)"; [[ "$help_text" == *"-passive"* && "$help_text" == *"-d"* && "$help_text" == *"-o"* && "$help_text" == *"-timeout"* ]] ;;
+        httpx) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-l"* && "$help_text" == *"-o"* && ( "$help_text" == *"-json"* || "$help_text" == *"-j,"* ) && "$help_text" == *"-t"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retries"* ]] ;;
+        katana) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-list"* && "$help_text" == *"-o"* && "$help_text" == *"-cs"* && "$help_text" == *"-c"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retry"* ]] ;;
+        gau) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"--o"* && "$help_text" == *"--threads"* && "$help_text" == *"--timeout"* && "$help_text" == *"--retries"* && "$help_text" == *"--subs"* ]] ;;
+        waybackurls) help_text="$("$tool" -h 2>&1 || true)"; [[ -n "$help_text" ]] ;;
+        hakrawler) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-d"* && "$help_text" == *"-timeout"* ]] ;;
+        nuclei) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-l"* && "$help_text" == *"-o"* && ( "$help_text" == *"-jsonl"* || "$help_text" == *"-j,"* ) && "$help_text" == *"-c"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retries"* ]] ;;
+        dalfox) help_text="$("$tool" scan --help 2>&1 || "$tool" -h 2>&1 || true)"; [[ "$help_text" == *"file"* && "$help_text" == *"-o"* && "$help_text" == *"rate-limit"* && "$help_text" == *"timeout"* ]] ;;
+        kxss) help_text="$("$tool" -h 2>&1 || true)"; [[ -n "$help_text" ]] ;;
+        commix) help_text="$("$tool" --help 2>&1 || true)"; [[ "$help_text" == *"--batch"* && "$help_text" == *"--timeout"* && "$help_text" == *"-u"* ]] ;;
+        jq|pandoc|weasyprint) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 validate_tool() {
     local tool="$1" path version
     path="$(command -v "$tool" 2>/dev/null || true)"
     [[ -n "$path" && -x "$path" ]] || return 1
     tool_identity_ok "$tool" || return 1
+    tool_compatibility_ok "$tool" || return 1
     version="$(tool_version_output "$tool")"
     ok "$tool detected"
     if [[ -n "$version" ]]; then printf '    Version: %s\n' "$version"; else printf '    Version: unavailable\n'; fi
@@ -1028,6 +1091,9 @@ run_tool_stdout() {
 
 run_tool_output_arg() {
     # Usage: run_tool_output_arg MODULE TOOL RESULT_FILE INPUT_COUNT [ARGS...]
+    # The wrapper appends -o RESULT_FILE to the command. Because the tool owns
+    # the result file, stdout is redirected only to stdout_log and never to the
+    # same path as RESULT_FILE.
     local module="$1" tool="$2" result_file="$3" input_count="$4"; shift 4
     local start end rc duration log_file stdout_log stderr_log
     local -a cmd=("$tool" "$@" -o "$result_file")
@@ -1037,7 +1103,7 @@ run_tool_output_arg() {
     stderr_log="$TOOL_LOG_ROOT/${module}_${tool}.stderr.log"
     : > "$result_file"; : > "$stdout_log"; : > "$stderr_log"
     log_command_array "$log_file" "${cmd[@]}"
-    printf 'tool=%s\nresult=%s\nstderr=%s\ninput_count=%s\n' "$tool" "$result_file" "$stderr_log" "$input_count" >> "$log_file"
+    printf 'tool=%s\nresult=%s\nstdout=%s\nstderr=%s\ninput_count=%s\n' "$tool" "$result_file" "$stdout_log" "$stderr_log" "$input_count" >> "$log_file"
     log "Running $tool"
 
     if (( DRY_RUN == 1 )); then
@@ -1046,6 +1112,7 @@ run_tool_output_arg() {
         printf '\n' >> "$stdout_log"
         rc=0
     else
+        # IMPORTANT: result_file is written by the tool via its -o option.
         if "${cmd[@]}" >"$stdout_log" 2>"$stderr_log"; then rc=0; else rc=$?; fi
     fi
 
@@ -1155,6 +1222,43 @@ normalize_one_url() {
     printf '%s://%s%s%s\n' "$scheme" "$userinfo" "$hostpart" "$suffix"
 }
 
+scope_domain_regex() {
+    local domain="$1"
+    domain=${domain//./\\.}
+    printf '%s' "$domain"
+}
+
+build_katana_scope_file() {
+    local output="$1" line pattern domain escaped
+    : > "$output" || return 1
+    [[ -n "$SCOPE_FILE" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        pattern="$(trim_ws "${line%%#*}")"
+        [[ -z "$pattern" ]] && continue
+        if [[ "$pattern" == \*.* ]]; then
+            domain="${pattern#*.}"
+            escaped="$(scope_domain_regex "$domain")"
+            # One or more labels before the scoped suffix => wildcard does not include apex.
+            printf '^https?://([A-Za-z0-9-]+\\.)+%s(?::[0-9]+)?(?:[/#?]|$)' "$escaped" >> "$output"
+        else
+            escaped="$(scope_domain_regex "$pattern")"
+            printf '^https?://%s(?::[0-9]+)?(?:[/#?]|$)' "$escaped" >> "$output"
+        fi
+        printf '\n' >> "$output"
+    done < "$SCOPE_FILE"
+}
+
+filter_in_scope_url_list() {
+    local input="$1" output="$2" line host
+    : > "$output"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        host="$(host_from_url "$(trim_ws "$line")")"
+        [[ -n "$host" ]] || continue
+        is_in_scope "$host" && printf '%s\n' "$(trim_ws "$line")" >> "$output"
+    done < "$input"
+    sort -u "$output" -o "$output"
+}
+
 filter_scope_subdomains() {
     local input="$1" output="$2" line host
     : > "$output"
@@ -1214,6 +1318,7 @@ module_deep_enum() {
     local out_dir="$OUTDIR/subdomains" all_subs="$OUTDIR/subdomains/all_subdomains.txt"
     local scoped_subs="$OUTDIR/subdomains/scoped_subdomains.txt" seed_file="$TMP_DIR/deep_seed.txt"
     local count live_count enum_minutes
+    local enum_successes=0 enum_failures=0 probe_successes=0 probe_failures=0 total_successes=0 total_failures=0
 
     : > "$out_dir/subfinder.txt"; : > "$out_dir/assetfinder.txt"; : > "$out_dir/amass.txt"
     : > "$out_dir/all_subdomains.txt"; : > "$out_dir/scoped_subdomains.txt"
@@ -1225,16 +1330,16 @@ module_deep_enum() {
     enum_minutes="$(tool_timeout_minutes "$TIMEOUT")"
 
     if require_tool subfinder; then
-        run_tool_output_arg "$module" subfinder "$out_dir/subfinder.txt" 1 -d "$TARGET" -all -silent -timeout "$TIMEOUT" -max-time "$enum_minutes" || failures=$((failures + 1))
-    else warn "Skipping subfinder: unavailable."; failures=$((failures + 1)); fi
+        if run_tool_output_arg "$module" subfinder "$out_dir/subfinder.txt" 1 -d "$TARGET" -all -silent -timeout "$TIMEOUT" -max-time "$enum_minutes"; then enum_successes=$((enum_successes + 1)); else enum_failures=$((enum_failures + 1)); fi
+    else warn "Skipping subfinder: unavailable."; enum_failures=$((enum_failures + 1)); fi
 
     if require_tool assetfinder; then
-        run_tool_stdout "$module" assetfinder "$out_dir/assetfinder.txt" 1 --subs-only "$TARGET" || failures=$((failures + 1))
-    else warn "Skipping assetfinder: unavailable."; failures=$((failures + 1)); fi
+        if run_tool_stdout "$module" assetfinder "$out_dir/assetfinder.txt" 1 --subs-only "$TARGET"; then enum_successes=$((enum_successes + 1)); else enum_failures=$((enum_failures + 1)); fi
+    else warn "Skipping assetfinder: unavailable."; enum_failures=$((enum_failures + 1)); fi
 
     if require_tool amass; then
-        run_tool_output_arg "$module" amass "$out_dir/amass.txt" 1 enum -passive -d "$TARGET" -timeout "$enum_minutes" || failures=$((failures + 1))
-    else warn "Skipping amass: unavailable."; failures=$((failures + 1)); fi
+        if run_tool_output_arg "$module" amass "$out_dir/amass.txt" 1 enum -passive -d "$TARGET" -timeout "$enum_minutes"; then enum_successes=$((enum_successes + 1)); else enum_failures=$((enum_failures + 1)); fi
+    else warn "Skipping amass: unavailable."; enum_failures=$((enum_failures + 1)); fi
 
     cat "$seed_file" "$out_dir/subfinder.txt" "$out_dir/assetfinder.txt" "$out_dir/amass.txt" 2>/dev/null \
         | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
@@ -1249,7 +1354,7 @@ module_deep_enum() {
         local input_count
         input_count="$(count_lines "$scoped_subs")"
         local -a args=(-l "$scoped_subs" -silent -status-code -title -tech-detect -json -t "$THREADS" -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retries "$RETRIES")
-        run_tool_output_arg "$module" httpx "$out_dir/httpx_results.jsonl" "$input_count" "${args[@]}" || failures=$((failures + 1))
+        if run_tool_output_arg "$module" httpx "$out_dir/httpx_results.jsonl" "$input_count" "${args[@]}"; then probe_successes=$((probe_successes + 1)); else probe_failures=$((probe_failures + 1)); fi
         if [[ -s "$out_dir/httpx_results.jsonl" ]]; then
             if command -v jq >/dev/null 2>&1 && jq -e . >/dev/null 2>&1 < "$out_dir/httpx_results.jsonl"; then
                 jq -r 'select(type=="object") | (.url // .input // empty)' "$out_dir/httpx_results.jsonl" 2>/dev/null | sed '/^$/d' | sort -u > "$out_dir/live_hosts.txt" || :
@@ -1259,13 +1364,15 @@ module_deep_enum() {
             fi
         fi
         live_count="$(count_lines "$out_dir/live_hosts.txt")"; ok "Live hosts: $live_count"
-    else warn "Skipping httpx: unavailable."; failures=$((failures + 1)); fi
+    else warn "Skipping httpx: unavailable."; probe_failures=$((probe_failures + 1)); fi
 
+    total_successes=$((enum_successes + probe_successes))
+    total_failures=$((enum_failures + probe_failures))
     end="$(date +%s)"
-    if (( failures == 0 )); then DEEP_STATUS="completed"; rc=0
-    elif (( count > 0 )); then DEEP_STATUS="partial"; rc=1
+    if (( total_failures == 0 )); then DEEP_STATUS="completed"; rc=0
+    elif (( total_successes > 0 )); then DEEP_STATUS="partial"; rc=1
     else DEEP_STATUS="failed"; rc=1; fi
-    write_state "$module" "$DEEP_STATUS" "$start" "$end" "$rc" "failures=$failures"
+    write_state "$module" "$DEEP_STATUS" "$start" "$end" "$rc" "enumeration_successes=$enum_successes enumeration_failures=$enum_failures probe_successes=$probe_successes probe_failures=$probe_failures"
     (( rc == 0 ))
 }
 
@@ -1284,11 +1391,32 @@ module_url_crawl() {
     start="$(date +%s)"; URL_STATUS="running"; write_state "$module" running "$start" 0 0 "" || return 1
     hdr "URL Crawling & Parameter Mining"
 
-    if [[ -s "$live_hosts" ]]; then cp -- "$live_hosts" "$crawl_input"; else printf 'https://%s\n' "$TARGET" > "$crawl_input"; warn "No live-host file available; falling back to https://$TARGET"; fi
+    if [[ -s "$live_hosts" ]]; then
+        if [[ -n "$SCOPE_FILE" ]]; then
+            filter_in_scope_url_list "$live_hosts" "$crawl_input"
+        else
+            cp -- "$live_hosts" "$crawl_input"
+        fi
+    else
+        printf 'https://%s\n' "$TARGET" > "$crawl_input"
+        warn "No live-host file available; falling back to https://$TARGET"
+    fi
+    if [[ -n "$SCOPE_FILE" && ! -s "$crawl_input" ]]; then
+        err "No in-scope crawl seeds are available."
+        URL_STATUS="failed"
+        end="$(date +%s)"
+        write_state "$module" "$URL_STATUS" "$start" "$end" 1 "no_in_scope_crawl_seeds"
+        return 1
+    fi
     local crawl_count="$(count_lines "$crawl_input")"
 
     if require_tool katana; then
+        local katana_scope_file="$TMP_DIR/katana_scope.regex"
+        [[ -n "$SCOPE_FILE" ]] && build_katana_scope_file "$katana_scope_file"
         local -a args=(-list "$crawl_input" -silent -jc -kf all -c "$THREADS" -p 1 -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retry "$RETRIES")
+        if [[ -n "$SCOPE_FILE" ]]; then
+            args+=(-cs "$katana_scope_file")
+        fi
         if run_tool_output_arg "$module" katana "$url_dir/katana.txt" "$crawl_count" "${args[@]}"; then cat "$url_dir/katana.txt" >> "$all_raw"; else failures=$((failures + 1)); fi
     else warn "Skipping katana: unavailable."; failures=$((failures + 1)); fi
 
@@ -1302,7 +1430,7 @@ module_url_crawl() {
     else warn "Skipping waybackurls: unavailable."; failures=$((failures + 1)); fi
 
     if require_tool hakrawler; then
-        if run_tool_stdin "$module" hakrawler "$crawl_input" "$url_dir/hakrawler.txt" "$crawl_count" -d 2 -timeout "$TIMEOUT"; then cat "$url_dir/hakrawler.txt" >> "$all_raw"; else failures=$((failures + 1)); fi
+        if run_tool_stdin "$module" hakrawler "$crawl_input" "$url_dir/hakrawler.txt" "$crawl_count" -d 2 -t "$THREADS" -timeout "$TIMEOUT"; then cat "$url_dir/hakrawler.txt" >> "$all_raw"; else failures=$((failures + 1)); fi
     else warn "Skipping hakrawler: unavailable."; failures=$((failures + 1)); fi
 
     normalize_urls "$all_raw" "$url_dir/all_urls.txt"
@@ -1405,7 +1533,10 @@ module_vuln_scan() {
         else KXSS_STATUS="skipped"; warn "Skipping kxss: unavailable."; failures=$((failures + 1)); fi
 
         if require_tool dalfox; then
-            local -a args=(scan file "$param_urls" --silence --no-color --rate-limit "$RATE_LIMIT" --workers "$THREADS" --timeout "$TIMEOUT")
+            local -a args=(scan file "$param_urls" --silence --no-color --rate-limit "$RATE_LIMIT" --timeout "$TIMEOUT")
+            local dalfox_help="$(dalfox scan --help 2>&1 || true)"
+            if [[ "$dalfox_help" == *"--workers"* ]]; then args+=(--workers "$THREADS"); elif [[ "$dalfox_help" == *"--concurrency"* ]]; then args+=(--concurrency "$THREADS"); fi
+            if [[ "$dalfox_help" == *"--retries"* ]]; then args+=(--retries "$RETRIES"); fi
             if run_tool_output_arg "$module" dalfox "$vuln_dir/dalfox_results.txt" "$param_count" "${args[@]}"; then DALFOX_STATUS="completed"; else DALFOX_STATUS="failed"; failures=$((failures + 1)); fi
         else DALFOX_STATUS="skipped"; warn "Skipping dalfox: unavailable."; failures=$((failures + 1)); fi
 
@@ -1619,6 +1750,14 @@ main() {
         load_config_file "$CONFIG_FILE" || return 1
     fi
 
+    if (( DRY_RUN == 1 && INSTALL_REQUESTED == 1 )); then
+        err "--dry-run cannot be combined with --install"
+        return 1
+    fi
+    if (( INSTALL_REQUESTED == 1 && NO_INSTALL == 1 )); then
+        err "--install and --no-install cannot be used together"
+        return 1
+    fi
     (( INSTALL_REQUESTED == 1 )) && NO_INSTALL=0
 
     if [[ -n "$RESUME_DIR" && $MODE_DEEP -eq 0 && $MODE_URL -eq 0 && $MODE_VULN -eq 0 && $MODE_FULL -eq 0 ]]; then
@@ -1626,13 +1765,7 @@ main() {
         ok "Resume mode without an explicit stage: using full pipeline and skipping completed stages."
     fi
 
-    validate_positive_int "--threads" "$THREADS" 0 || return 1
-    validate_positive_int "--rate-limit" "$RATE_LIMIT" 1 || return 1
-    validate_positive_int "--timeout" "$TIMEOUT" 1 || return 1
-    validate_positive_int "--retries" "$RETRIES" 0 || return 1
-    validate_positive_int "--max-injection-targets" "$MAX_INJECTION_TARGETS" 0 || return 1
-    case "$NO_INSTALL" in 0|1) ;; *) err "NO_INSTALL must be 0 or 1."; return 1 ;; esac
-    case "$VERBOSE" in 0|1) ;; *) err "VERBOSE must be 0 or 1."; return 1 ;; esac
+    validate_runtime_options || return 1
 
     MODE_REPORT_REQUESTED=$(( MODE_FULL ))
     if (( MODE_DEEP == 0 && MODE_URL == 0 && MODE_VULN == 0 && MODE_FULL == 0 )); then
@@ -1671,19 +1804,24 @@ main() {
         warn "No --scope file supplied. Run only against explicitly authorized targets and obey the program scope/rate limits."
     fi
 
-    check_dependencies || true
-    write_run_json
-
     if (( DRY_RUN == 1 )); then
+        # Dry-run must not execute dependency binaries or installers. It only
+        # builds the plan from the already parsed configuration.
+        build_required_tools
         hdr "Dry Run Plan"
         (( MODE_FULL == 1 || MODE_DEEP == 1 )) && printf '[DRY-RUN] Discovery: subfinder -> assetfinder -> amass -> httpx\n'
         (( MODE_FULL == 1 || MODE_URL == 1 )) && printf '[DRY-RUN] URLs: katana + gau + waybackurls + hakrawler -> normalization -> parameter mining\n'
         (( MODE_FULL == 1 || MODE_VULN == 1 )) && printf '[DRY-RUN] Vulnerability checks: nuclei + kxss + dalfox + bounded commix\n'
         (( MODE_FULL == 1 )) && printf '[DRY-RUN] Reporting: Markdown -> HTML -> PDF\n'
+        printf '[DRY-RUN] Required dependencies:\n'
+        printf '  - %s\n' "${REQUIRED_TOOLS[@]}"
         FINISHED_EPOCH="$(date +%s)"; write_run_json
-        ok "Dry run complete. No active scanning was performed."
+        ok "Dry run complete. No dependency installation or active scanning was performed."
         return 0
     fi
+
+    check_dependencies || true
+    write_run_json
 
     if (( MODE_FULL == 1 || MODE_DEEP == 1 )); then
         if state_is_completed deep_enum; then DEEP_STATUS="completed"; ok "Skipping completed module: deep_enum"; else module_deep_enum || FINAL_RC=1; fi
@@ -1709,4 +1847,6 @@ main() {
     return "$FINAL_RC"
 }
 
-main "$@"
+if [[ "${BELTU_SOURCE_ONLY:-0}" != "1" ]]; then
+    main "$@"
+fi
