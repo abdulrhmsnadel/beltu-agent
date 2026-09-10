@@ -13,9 +13,31 @@ SCRIPT_NAME="BelTu-Agent"
 SCRIPT_VERSION="1.1.2"
 SCRIPT_COMMAND="beltu"
 
+# Resolve the project directory once so installed/local tool binaries can be
+# discovered reliably even when the launcher is invoked from another cwd.
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+TOOL_BIN_DIR="${BELTU_TOOL_BIN:-$SCRIPT_DIR/.beltu-tools/bin}"
+LOCAL_CARGO_BIN_DIR="${BELTU_CARGO_BIN:-$SCRIPT_DIR/.beltu-tools/cargo/bin}"
 GOBIN_DIR="${GOBIN:-${GOPATH:-$HOME/go}/bin}"
 CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
-export PATH="$PATH:$GOBIN_DIR:$CARGO_BIN_DIR:$HOME/.local/bin:/usr/local/go/bin"
+
+# Tool discovery is explicit and ordered. We do not search the current working
+# directory because doing so could accidentally execute a malicious look-alike
+# binary placed next to an engagement target/output directory.
+declare -a TOOL_SEARCH_DIRS=(
+    "$TOOL_BIN_DIR"
+    "$LOCAL_CARGO_BIN_DIR"
+    "$GOBIN_DIR"
+    "$CARGO_BIN_DIR"
+    "$HOME/.local/bin"
+    "/usr/local/bin"
+    "/usr/bin"
+    "/bin"
+)
+
+# Prepend the project/user tool locations so installed tools are immediately
+# discoverable without requiring the caller to edit PATH first.
+export PATH="$TOOL_BIN_DIR:$GOBIN_DIR:$CARGO_BIN_DIR:$HOME/.local/bin:$PATH:/usr/local/go/bin"
 
 # -----------------------------------------------------------------------------
 # Runtime configuration
@@ -732,6 +754,43 @@ validate_core_commands() {
 # -----------------------------------------------------------------------------
 # Dependency validation and installation
 # -----------------------------------------------------------------------------
+resolve_tool() {
+    local tool="$1" dir candidate found=""
+
+    # Absolute/relative paths are accepted only when they are executable.
+    if [[ "$tool" == */* ]]; then
+        [[ -x "$tool" ]] || return 1
+        printf '%s\n' "$tool"
+        return 0
+    fi
+
+    # Prefer the exact path found by PATH, then explicitly inspect known tool
+    # directories. This makes the search deterministic even in unusual shells.
+    found="$(command -v -- "$tool" 2>/dev/null || true)"
+    if [[ -n "$found" && -x "$found" ]]; then
+        printf '%s\n' "$found"
+        return 0
+    fi
+
+    # Include current variable values first so tests/embedded callers can override
+    # the tool directories after sourcing without rebuilding global arrays.
+    local -a search_dirs=("$TOOL_BIN_DIR" "$LOCAL_CARGO_BIN_DIR" "${TOOL_SEARCH_DIRS[@]}")
+    for dir in "${search_dirs[@]}"; do
+        [[ -n "$dir" ]] || continue
+        candidate="$dir/$tool"
+        if [[ -x "$candidate" && ! -d "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+tool_path() {
+    resolve_tool "$1"
+}
+
 package_manager() {
     if command -v apt-get >/dev/null 2>&1; then printf 'apt'
     elif command -v pacman >/dev/null 2>&1; then printf 'pacman'
@@ -831,18 +890,19 @@ install_weasyprint() {
 install_tool() {
     local tool="$1" pm
     pm="$(package_manager)"
+    ensure_dir "$TOOL_BIN_DIR" || return 1
     log "Installing dependency: $tool"
     case "$tool" in
-        subfinder) ensure_go && go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest ;;
-        assetfinder) ensure_go && go install -v github.com/tomnomnom/assetfinder@latest ;;
-        amass) ensure_go && CGO_ENABLED=0 go install -v github.com/owasp-amass/amass/v5/cmd/amass@latest ;;
-        httpx) ensure_go && go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest ;;
-        katana) ensure_go && go install -v github.com/projectdiscovery/katana/cmd/katana@latest ;;
-        gau) ensure_go && go install -v github.com/lc/gau/v2/cmd/gau@latest ;;
-        waybackurls) ensure_go && go install -v github.com/tomnomnom/waybackurls@latest ;;
-        hakrawler) ensure_go && go install -v github.com/hakluke/hakrawler@latest ;;
-        nuclei) ensure_go && go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest ;;
-        kxss) ensure_go && go install -v github.com/Emoe/kxss@latest ;;
+        subfinder) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest ;;
+        assetfinder) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/tomnomnom/assetfinder@latest ;;
+        amass) ensure_go && GOBIN="$TOOL_BIN_DIR" CGO_ENABLED=0 go install -v github.com/owasp-amass/amass/v5/cmd/amass@latest ;;
+        httpx) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest ;;
+        katana) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/projectdiscovery/katana/cmd/katana@latest ;;
+        gau) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/lc/gau/v2/cmd/gau@latest ;;
+        waybackurls) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/tomnomnom/waybackurls@latest ;;
+        hakrawler) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/hakluke/hakrawler@latest ;;
+        nuclei) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest ;;
+        kxss) ensure_go && GOBIN="$TOOL_BIN_DIR" go install -v github.com/Emoe/kxss@latest ;;
         dalfox)
             case "$pm" in
                 brew) install_packages brew dalfox && return $? ;;
@@ -850,7 +910,7 @@ install_tool() {
                 pacman) install_packages pacman dalfox && return $? ;;
                 dnf) install_packages dnf dalfox && return $? ;;
             esac
-            ensure_cargo && cargo install dalfox --locked
+            ensure_cargo && cargo install dalfox --locked --root "${BELTU_CARGO_ROOT:-$SCRIPT_DIR/.beltu-tools/cargo}"
             ;;
         commix)
             ensure_git || return 1
@@ -862,13 +922,13 @@ install_tool() {
             else
                 git clone --depth 1 https://github.com/commixproject/commix.git "$dir" || return 1
             fi
-            ensure_dir "$HOME/.local/bin" || return 1
-            cat > "$HOME/.local/bin/commix" <<EOF_COMMIX
+            ensure_dir "$TOOL_BIN_DIR" || return 1
+            cat > "$TOOL_BIN_DIR/commix" <<EOF_COMMIX
 #!/usr/bin/env bash
 exec python3 "$dir/commix.py" "\$@"
 EOF_COMMIX
-            chmod 0755 "$HOME/.local/bin/commix" || return 1
-            export PATH="$HOME/.local/bin:$PATH"
+            chmod 0755 "$TOOL_BIN_DIR/commix" || return 1
+            export PATH="$TOOL_BIN_DIR:$PATH"
             ;;
         jq|pandoc) install_packages "$pm" "$tool" ;;
         weasyprint) install_weasyprint "$pm" ;;
@@ -877,19 +937,20 @@ EOF_COMMIX
 }
 
 tool_probe_output() {
-    local tool="$1" out="" help_out=""
+    local tool="$1" out="" help_out="" executable
+    executable="$(resolve_tool "$tool" 2>/dev/null)" || return 1
     case "$tool" in
         assetfinder|waybackurls|hakrawler|kxss|gau)
-            out="$("$tool" -h 2>&1 || true)"
+            out="$("$executable" -h 2>&1 || true)"
             ;;
         subfinder|amass|httpx|katana|nuclei)
-            out="$("$tool" -version 2>&1 || true)"
-            help_out="$("$tool" -h 2>&1 || true)"
+            out="$("$executable" -version 2>&1 || true)"
+            help_out="$("$executable" -h 2>&1 || true)"
             [[ -n "$help_out" ]] && out="${out}"$'\n'"${help_out}"
             ;;
         dalfox|commix|jq|pandoc|weasyprint)
-            out="$("$tool" --version 2>&1 || true)"
-            [[ -z "$out" ]] && out="$("$tool" --help 2>&1 || true)"
+            out="$("$executable" --version 2>&1 || true)"
+            [[ -z "$out" ]] && out="$("$executable" --help 2>&1 || true)"
             ;;
         *) out="" ;;
     esac
@@ -897,12 +958,13 @@ tool_probe_output() {
 }
 
 tool_version_output() {
-    local tool="$1" out=""
+    local tool="$1" out="" executable
+    executable="$(resolve_tool "$tool" 2>/dev/null)" || return 1
     case "$tool" in
-        assetfinder|waybackurls|hakrawler|kxss) out="$("$tool" -h 2>&1 || true)" ;;
-        gau) out="$("$tool" --version 2>&1 || true)"; [[ -z "$out" ]] && out="$("$tool" -h 2>&1 || true)" ;;
-        subfinder|amass|httpx|katana|nuclei) out="$("$tool" -version 2>&1 || true)" ;;
-        dalfox|commix|jq|pandoc|weasyprint) out="$("$tool" --version 2>&1 || true)" ;;
+        assetfinder|waybackurls|hakrawler|kxss) out="$("$executable" -h 2>&1 || true)" ;;
+        gau) out="$("$executable" --version 2>&1 || true)"; [[ -z "$out" ]] && out="$("$executable" -h 2>&1 || true)" ;;
+        subfinder|amass|httpx|katana|nuclei) out="$("$executable" -version 2>&1 || true)" ;;
+        dalfox|commix|jq|pandoc|weasyprint) out="$("$executable" --version 2>&1 || true)" ;;
         *) out="" ;;
     esac
     [[ -n "$out" ]] && printf '%s\n' "$out" | sed -n '1p'
@@ -933,20 +995,21 @@ tool_identity_ok() {
 }
 
 tool_compatibility_ok() {
-    local tool="$1" help_text
+    local tool="$1" help_text executable
+    executable="$(resolve_tool "$tool" 2>/dev/null)" || return 1
     case "$tool" in
-        subfinder) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-d"* && "$help_text" == *"-o"* && "$help_text" == *"-timeout"* && "$help_text" == *"-max-time"* ]] ;;
-        assetfinder) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"--subs-only"* ]] ;;
-        amass) help_text="$("$tool" enum -h 2>&1 || true)"; [[ "$help_text" == *"-passive"* && "$help_text" == *"-d"* && "$help_text" == *"-o"* && "$help_text" == *"-timeout"* ]] ;;
-        httpx) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-l"* && "$help_text" == *"-o"* && ( "$help_text" == *"-json"* || "$help_text" == *"-j,"* ) && "$help_text" == *"-t"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retries"* ]] ;;
-        katana) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-list"* && "$help_text" == *"-o"* && "$help_text" == *"-cs"* && "$help_text" == *"-c"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retry"* ]] ;;
-        gau) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"--o"* && "$help_text" == *"--threads"* && "$help_text" == *"--timeout"* && "$help_text" == *"--retries"* && "$help_text" == *"--subs"* ]] ;;
-        waybackurls) help_text="$("$tool" -h 2>&1 || true)"; [[ -n "$help_text" ]] ;;
-        hakrawler) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-d"* && "$help_text" == *"-timeout"* ]] ;;
-        nuclei) help_text="$("$tool" -h 2>&1 || true)"; [[ "$help_text" == *"-l"* && "$help_text" == *"-o"* && ( "$help_text" == *"-jsonl"* || "$help_text" == *"-j,"* ) && "$help_text" == *"-c"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retries"* ]] ;;
-        dalfox) help_text="$("$tool" scan --help 2>&1 || "$tool" -h 2>&1 || true)"; [[ "$help_text" == *"file"* && "$help_text" == *"-o"* && "$help_text" == *"rate-limit"* && "$help_text" == *"timeout"* ]] ;;
-        kxss) help_text="$("$tool" -h 2>&1 || true)"; [[ -n "$help_text" ]] ;;
-        commix) help_text="$("$tool" --help 2>&1 || true)"; [[ "$help_text" == *"--batch"* && "$help_text" == *"--timeout"* && "$help_text" == *"-u"* ]] ;;
+        subfinder) help_text="$("$executable" -h 2>&1 || true)"; [[ "$help_text" == *"-d"* && "$help_text" == *"-o"* && "$help_text" == *"-timeout"* && "$help_text" == *"-max-time"* ]] ;;
+        assetfinder) help_text="$("$executable" -h 2>&1 || true)"; [[ "$help_text" == *"--subs-only"* ]] ;;
+        amass) help_text="$("$executable" enum -h 2>&1 || true)"; [[ "$help_text" == *"-passive"* && "$help_text" == *"-d"* && "$help_text" == *"-o"* && "$help_text" == *"-timeout"* ]] ;;
+        httpx) help_text="$("$executable" -h 2>&1 || true)"; [[ "$help_text" == *"-l"* && "$help_text" == *"-o"* && ( "$help_text" == *"-json"* || "$help_text" == *"-j,"* ) && "$help_text" == *"-t"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retries"* ]] ;;
+        katana) help_text="$("$executable" -h 2>&1 || true)"; [[ "$help_text" == *"-list"* && "$help_text" == *"-o"* && "$help_text" == *"-cs"* && "$help_text" == *"-c"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retry"* ]] ;;
+        gau) help_text="$("$executable" -h 2>&1 || true)"; [[ "$help_text" == *"--o"* && "$help_text" == *"--threads"* && "$help_text" == *"--timeout"* && "$help_text" == *"--retries"* && "$help_text" == *"--subs"* ]] ;;
+        waybackurls) help_text="$("$executable" -h 2>&1 || true)"; [[ -n "$help_text" ]] ;;
+        hakrawler) help_text="$("$executable" -h 2>&1 || true)"; [[ "$help_text" == *"-d"* && "$help_text" == *"-timeout"* ]] ;;
+        nuclei) help_text="$("$executable" -h 2>&1 || true)"; [[ "$help_text" == *"-l"* && "$help_text" == *"-o"* && ( "$help_text" == *"-jsonl"* || "$help_text" == *"-j,"* ) && "$help_text" == *"-c"* && "$help_text" == *"-rl"* && "$help_text" == *"-timeout"* && "$help_text" == *"-retries"* ]] ;;
+        dalfox) help_text="$("$executable" scan --help 2>&1 || "$executable" -h 2>&1 || true)"; [[ "$help_text" == *"file"* && "$help_text" == *"-o"* && "$help_text" == *"rate-limit"* && "$help_text" == *"timeout"* ]] ;;
+        kxss) help_text="$("$executable" -h 2>&1 || true)"; [[ -n "$help_text" ]] ;;
+        commix) help_text="$("$executable" --help 2>&1 || true)"; [[ "$help_text" == *"--batch"* && "$help_text" == *"--timeout"* && "$help_text" == *"-u"* ]] ;;
         jq|pandoc|weasyprint) return 0 ;;
         *) return 1 ;;
     esac
@@ -954,7 +1017,7 @@ tool_compatibility_ok() {
 
 validate_tool() {
     local tool="$1" path version
-    path="$(command -v "$tool" 2>/dev/null || true)"
+    path="$(resolve_tool "$tool" 2>/dev/null)" || return 1
     [[ -n "$path" && -x "$path" ]] || return 1
     tool_identity_ok "$tool" || return 1
     tool_compatibility_ok "$tool" || return 1
@@ -985,7 +1048,7 @@ collect_dependency_status() {
     for tool in "${REQUIRED_TOOLS[@]}"; do
         if validate_tool "$tool" >/dev/null 2>&1; then
             TOOL_OK+=("$tool")
-        elif command -v "$tool" >/dev/null 2>&1; then
+        elif resolve_tool "$tool" >/dev/null 2>&1; then
             TOOL_BAD+=("$tool")
         else
             TOOL_MISSING+=("$tool")
@@ -1063,8 +1126,9 @@ log_command_array() {
 run_tool_stdout() {
     # Usage: run_tool_stdout MODULE TOOL RESULT_FILE INPUT_COUNT [ARGS...]
     local module="$1" tool="$2" result_file="$3" input_count="$4"; shift 4
-    local start end rc duration log_file stdout_log stderr_log
-    local -a cmd=("$tool" "$@")
+    local start end rc duration log_file stdout_log stderr_log executable
+    executable="$(resolve_tool "$tool" 2>/dev/null)" || { err "Tool '$tool' could not be resolved at execution time."; return 127; }
+    local -a cmd=("$executable" "$@")
     start="$(date +%s)"
     log_file="$TOOL_LOG_ROOT/${module}_${tool}.log"
     stdout_log="$TOOL_LOG_ROOT/${module}_${tool}.stdout.log"
@@ -1095,8 +1159,9 @@ run_tool_output_arg() {
     # the result file, stdout is redirected only to stdout_log and never to the
     # same path as RESULT_FILE.
     local module="$1" tool="$2" result_file="$3" input_count="$4"; shift 4
-    local start end rc duration log_file stdout_log stderr_log
-    local -a cmd=("$tool" "$@" -o "$result_file")
+    local start end rc duration log_file stdout_log stderr_log executable
+    executable="$(resolve_tool "$tool" 2>/dev/null)" || { err "Tool '$tool' could not be resolved at execution time."; return 127; }
+    local -a cmd=("$executable" "$@" -o "$result_file")
     start="$(date +%s)"
     log_file="$TOOL_LOG_ROOT/${module}_${tool}.log"
     stdout_log="$TOOL_LOG_ROOT/${module}_${tool}.stdout.log"
@@ -1125,8 +1190,9 @@ run_tool_output_arg() {
 run_tool_named_output() {
     # Usage: run_tool_named_output MODULE TOOL RESULT_FILE INPUT_COUNT OUTPUT_FLAG [ARGS...]
     local module="$1" tool="$2" result_file="$3" input_count="$4" output_flag="$5"; shift 5
-    local start end rc duration log_file stdout_log stderr_log
-    local -a cmd=("$tool" "$@" "$output_flag" "$result_file")
+    local start end rc duration log_file stdout_log stderr_log executable
+    executable="$(resolve_tool "$tool" 2>/dev/null)" || { err "Tool '$tool' could not be resolved at execution time."; return 127; }
+    local -a cmd=("$executable" "$@" "$output_flag" "$result_file")
     start="$(date +%s)"
     log_file="$TOOL_LOG_ROOT/${module}_${tool}.log"
     stdout_log="$TOOL_LOG_ROOT/${module}_${tool}.stdout.log"
@@ -1152,8 +1218,9 @@ run_tool_named_output() {
 run_tool_stdin() {
     # Usage: run_tool_stdin MODULE TOOL INPUT_FILE RESULT_FILE INPUT_COUNT [ARGS...]
     local module="$1" tool="$2" input_file="$3" result_file="$4" input_count="$5"; shift 5
-    local start end rc duration log_file stdout_log stderr_log
-    local -a cmd=("$tool" "$@")
+    local start end rc duration log_file stdout_log stderr_log executable
+    executable="$(resolve_tool "$tool" 2>/dev/null)" || { err "Tool '$tool' could not be resolved at execution time."; return 127; }
+    local -a cmd=("$executable" "$@")
     start="$(date +%s)"
     log_file="$TOOL_LOG_ROOT/${module}_${tool}.log"
     stdout_log="$TOOL_LOG_ROOT/${module}_${tool}.stdout.log"
@@ -1468,7 +1535,9 @@ run_commix_bounded() {
         (( count >= MAX_INJECTION_TARGETS )) && break
         count=$((count + 1))
         temp_out="$TMP_DIR/commix_${count}.txt"
-        local -a cmd=(commix --batch "--timeout=$TIMEOUT" -u "$url")
+        local commix_executable
+        commix_executable="$(resolve_tool commix 2>/dev/null)" || { rc=1; printf 'TARGET: %s\n' "$url" >> "$output"; printf 'commix executable could not be resolved\n' >> "$stderr_log"; continue; }
+        local -a cmd=("$commix_executable" --batch "--timeout=$TIMEOUT" -u "$url")
         log_command_array "$tool_log" "${cmd[@]}"
         if (( DRY_RUN == 1 )); then
             printf 'DRY-RUN target=%s\n' "$url" >> "$output"
@@ -1847,6 +1916,8 @@ main() {
     return "$FINAL_RC"
 }
 
-if [[ "${BELTU_SOURCE_ONLY:-0}" != "1" ]]; then
+# Run main only when executed directly. When sourced by tests or another Bash
+# process, BASH_SOURCE[0] points to this file while $0 points to the caller.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     main "$@"
 fi
