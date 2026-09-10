@@ -2,7 +2,7 @@
 #
 # ============================================================================
 # BelTu-Agent — Recon & Vulnerability Scanning Orchestrator
-# Version: 1.1.1
+# Version: 1.1.2
 # Purpose: Authorized security testing / bug bounty recon automation ONLY.
 # ============================================================================
 
@@ -10,7 +10,7 @@ set -uo pipefail
 IFS=$'\n\t'
 
 SCRIPT_NAME="BelTu-Agent"
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 SCRIPT_COMMAND="beltu"
 
 GOBIN_DIR="${GOBIN:-${GOPATH:-$HOME/go}/bin}"
