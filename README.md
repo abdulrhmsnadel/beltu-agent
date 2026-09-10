@@ -1,124 +1,83 @@
 # BelTu-Agent
 
-BelTu-Agent is a Bash CLI orchestrator for **authorized** reconnaissance and security testing. It combines discovery, HTTP probing, crawling, historical URL collection, parameter mining, automated vulnerability checks, state tracking, and structured reporting into a single resumable pipeline.
+BelTu-Agent is a Bash CLI orchestrator for **authorized** reconnaissance and security testing. It keeps the existing wrapper/orchestrator architecture and combines discovery, HTTP probing, crawling, historical URL collection, parameter mining, automated checks, state tracking, and reporting in one resumable pipeline.
 
-> **Authorized use only.** Run BelTu-Agent only against systems you own or are explicitly authorized to assess. Respect the target program scope, rate limits, terms of service, and applicable law.
+> **Authorized use only.** Run BelTu-Agent only against systems you own or are explicitly authorized to assess. Respect the program scope, rate limits, terms of service, and applicable law.
 
 ## Version
 
-**1.1.1**
+**1.1.2**
+
+This release is a focused installability/runtime-entrypoint fix to the 1.1.x architecture. It does not replace the project with a new framework and does not remove the existing discovery, crawling, scanning, scope, state, logging, or reporting features.
 
 ## Project overview
 
-BelTu-Agent preserves the original wrapper/orchestrator architecture instead of replacing it with a new framework.
-
-The primary CLI command is:
+The main CLI remains:
 
 ```bash
 beltu -t example.com -f
 ```
 
-The script can also be executed directly during development:
+The script is also directly executable during development:
 
 ```bash
 ./BelTu-Agent.sh -t example.com -d
 ```
 
-The project is intentionally Bash-first and does not require any external AI service or API.
-
 ## Features
 
-* Deep subdomain enumeration with `subfinder`, `assetfinder`, and `amass`
-* Active host probing with ProjectDiscovery `httpx`
-* URL crawling with `katana` and `hakrawler`
-* Historical URL collection with `gau` and `waybackurls`
-* URL normalization and deduplication
-* Unique endpoint extraction
-* Parameterized URL extraction
-* Unique parameter extraction
-* Automated checks with `nuclei`, `kxss`, `dalfox`, and bounded `commix`
-* Module-specific dependency validation
-* Tool identity and CLI compatibility validation
-* Version detection for supported tools
-* Interactive dependency installation
-* Explicit dependency installation with `--install`
-* Installation prevention with `--no-install`
-* Real dry-run mode with no installation or scanning
-* Scope allowlist enforcement with `--scope`
-* Native crawler scope restrictions where supported
-* Post-crawl scope filtering as an additional safety layer
-* Conservative concurrency and per-tool rate controls
-* Configurable timeouts and retries
-* Bounded command-injection testing targets
-* Structured per-tool logging
-* Module state tracking
-* Resume support
-* Accumulated runtime tracking across resumed runs
-* Machine-readable `run.json`
-* Markdown, HTML, and PDF reports
-* Clear distinction between scanner failure and zero findings
-* Bash 4+ implementation
-* No `eval`
-* No external result-upload service
-* No stealth, evasion, destructive, or credential-theft functionality
+- Deep subdomain enumeration: `subfinder`, `assetfinder`, `amass`
+- Active host probing: ProjectDiscovery `httpx`
+- URL crawling: `katana`, `hakrawler`
+- Historical URL collection: `gau`, `waybackurls`
+- URL normalization and deduplication
+- Parameterized URL, endpoint, and unique-parameter extraction
+- Automated checks: `nuclei`, `kxss`, `dalfox`, bounded `commix`
+- Module-specific dependency mapping
+- Tool identity, version, and CLI compatibility validation
+- Explicit and interactive dependency installation
+- Scope allowlist with pre-crawl filtering and Katana native scope restrictions
+- Post-crawl/post-provider scope filtering as a defense-in-depth layer
+- Per-tool request rate/concurrency controls where supported
+- Bounded runtime options to avoid accidental extreme values
+- Structured per-tool logs with stdout/stderr separation
+- Resumable module state
+- Accumulated duration across resume operations
+- Markdown, HTML, and PDF reporting
+- `run.json` machine-readable metadata
+- Bash 4+ implementation
+- No `eval`, stealth/evasion, credential theft, destructive actions, or external result-upload service
 
 ## Architecture
 
 ```text
 Target validation
       |
-      +--> Scope validation
-      |      exact domains + supported wildcard entries
+      +--> Scope validation (when --scope is supplied)
       |
-      +--> Dependency mapping
-      |      only dependencies required by selected mode(s)
-      |
-      +--> Tool validation
-      |      executable + identity + CLI compatibility + version
+      +--> Module-specific dependency mapping + tool validation
       |
       +--> Discovery / -d
-      |      subfinder
-      |      assetfinder
-      |      amass
-      |          |
-      |          +--> deduplication
-      |          +--> scope filtering
-      |          +--> httpx
+      |      subfinder + assetfinder + amass
+      |      -> deduplicate
+      |      -> scoped assets
+      |      -> httpx
       |
       +--> Crawling / -a
-      |      live hosts from -d when available
-      |      target fallback otherwise
-      |          |
-      |          +--> pre-crawl scope enforcement
-      |          +--> katana native scope controls
-      |          +--> katana
-      |          +--> gau
-      |          +--> waybackurls
-      |          +--> hakrawler
-      |          +--> post-crawl scope filtering
-      |          +--> URL normalization
-      |          +--> parameter mining
+      |      live in-scope hosts or target fallback
+      |      -> Katana native scope controls when supported
+      |      -> gau + waybackurls + hakrawler
+      |      -> post-filtering
+      |      -> URL normalization
+      |      -> parameter mining
       |
       +--> Vulnerability / -v
-      |      live hosts -> nuclei
-      |      parameterized URLs -> kxss
-      |      parameterized URLs -> dalfox
-      |      bounded parameterized URLs -> commix
-      |
-      +--> State / Resume
-      |      module status
-      |      original start time
-      |      accumulated runtime
+      |      in-scope live hosts -> nuclei
+      |      parameterized URLs -> kxss + dalfox + bounded commix
       |
       +--> Reporting / -f
-             executive summary
-             attack surface
-             findings summary
-             scanner status
-             tool coverage
-             raw-evidence references
-             verification guidance
-             disclaimer
+             executive summary + attack surface + findings
+             + module/tool coverage + evidence references
 ```
 
 ## Installation
@@ -126,206 +85,121 @@ Target validation
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/abdulrhmsnadel/BelTu-Agent.git
+git clone https://github.com/YOUR-USERNAME/BelTu-Agent.git
 cd BelTu-Agent
 chmod +x BelTu-Agent.sh
 ```
 
-### 2. Install the `beltu` command
+### 2. Make the script executable
 
-Recommended local installation:
+When the repository is copied from an archive or another filesystem, execute permissions may not be preserved. Run:
+
+```bash
+chmod +x BelTu-Agent.sh tests/test_beltu.sh
+```
+
+Verify direct execution:
+
+```bash
+./BelTu-Agent.sh --version
+```
+
+### 3. Install the `beltu` command
+
+Recommended user-local installation:
 
 ```bash
 make install-local
 ```
 
-This installs a user-level launcher without requiring a system-wide installation.
+This creates:
 
-You can then ensure the local binary directory is in your `PATH`:
+```text
+~/.local/bin/beltu -> /absolute/path/to/BelTu-Agent/BelTu-Agent.sh
+```
+
+Make sure the directory is in your `PATH`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-To persist it for future Bash sessions:
+To persist the path on Bash:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-You can always run the project directly during development:
+Verify the installed command:
+
+```bash
+command -v beltu
+beltu --version
+```
+
+For an explicit system-wide installation into `/usr/local/bin`:
+
+```bash
+make install
+```
+
+The system-wide target may use `sudo` because `/usr/local/bin` is normally administrator-owned. It is never invoked automatically by BelTu-Agent.
+
+You can still run the script directly from the repository:
 
 ```bash
 ./BelTu-Agent.sh -t example.com -d
 ```
 
-### 3. Check the installation
+### 4. Dependencies
 
-```bash
-beltu --version
-```
+BelTu-Agent checks only the dependencies needed for the selected stage(s).
 
-Expected:
+**`-d`**
 
-```text
-BelTu-Agent v1.1.1
-```
+- `subfinder`
+- `assetfinder`
+- `amass`
+- `httpx`
 
-You can also verify the CLI:
+**`-a`**
 
-```bash
-beltu --help
-```
+- `katana`
+- `gau`
+- `waybackurls`
+- `hakrawler`
 
-## Dependencies
+**`-v`**
 
-BelTu-Agent performs **module-specific dependency validation**. It does not require every supported security tool for every mode.
+- `nuclei`
+- `kxss`
+- `dalfox`
+- `commix`
 
-### `-d` — Discovery
+**Full pipeline / reporting**
 
-```text
-subfinder
-assetfinder
-amass
-httpx
-```
+- `jq`
+- `pandoc`
+- `weasyprint`
 
-### `-a` — Crawling and parameter mining
+The automatic installer is not invoked by `--dry-run`.
 
-```text
-katana
-gau
-waybackurls
-hakrawler
-```
-
-### `-v` — Vulnerability checks
-
-```text
-nuclei
-kxss
-dalfox
-commix
-```
-
-### `-f` — Full pipeline and reporting
-
-```text
-subfinder
-assetfinder
-amass
-httpx
-katana
-gau
-waybackurls
-hakrawler
-nuclei
-kxss
-dalfox
-commix
-jq
-pandoc
-weasyprint
-```
-
-For example:
-
-```bash
-beltu -t example.com -d
-```
-
-does not require `dalfox`, `commix`, `pandoc`, or `weasyprint`.
-
-## Dependency installation
-
-BelTu-Agent does not silently install missing dependencies when explicit installation has not been requested.
-
-Use:
+To explicitly authorize dependency installation:
 
 ```bash
 beltu -t example.com -f --install
 ```
 
-to explicitly allow dependency installation.
+With an interactive terminal, missing dependencies may be offered for installation. In non-interactive execution, unattended installation is refused unless `--install` is explicitly supplied.
 
-The installer supports common package managers where available:
+`--install` and `--no-install` are mutually exclusive, and `--dry-run` cannot be combined with `--install`.
 
-```text
-apt
-pacman
-dnf
-brew
-```
-
-Go-based tools are installed into user-space Go binaries.
-
-Where a Python fallback is required for WeasyPrint, BelTu-Agent uses an isolated virtual environment rather than modifying the system Python environment globally.
-
-### Disable installation
-
-Use:
-
-```bash
-beltu -t example.com -f --no-install
-```
-
-When `--no-install` is used, missing or invalid dependencies are reported and affected modules are skipped or marked unavailable.
-
-### Installation conflicts
-
-The following combination is rejected:
-
-```bash
-beltu -t example.com -f --install --no-install
-```
-
-Error:
-
-```text
-[x] --install and --no-install cannot be used together
-```
-
-## Dry run
-
-`--dry-run` is a real planning mode.
-
-Example:
-
-```bash
-beltu -t example.com -f --dry-run --no-install
-```
-
-Dry run:
-
-* validates the target
-* validates the scope when supplied
-* validates configuration values
-* calculates the selected execution plan
-* shows which stages would run
-* does not perform active scanning
-* does not execute security tools
-* does not install dependencies
-
-The following combination is intentionally rejected:
-
-```bash
-beltu -t example.com -f --dry-run --install
-```
-
-Error:
-
-```text
-[x] --dry-run cannot be combined with --install
-```
-
-This guarantees that a dry run cannot unexpectedly modify the system through dependency installation.
+Go-installed tools use the user Go binary directory. If the native Dalfox package is unavailable, the installer uses the modern Cargo-based path rather than modifying system Python. WeasyPrint prefers an OS package and otherwise uses an isolated Python virtual environment.
 
 ## Scope safety
 
-Use a scope file whenever a program provides an explicit asset allowlist.
-
-Example:
+Use a scope file whenever a program provides an explicit allowlist:
 
 ```text
 example.com
@@ -339,74 +213,22 @@ Run:
 beltu -t example.com -f --scope scope.txt
 ```
 
-A wildcard such as:
+A wildcard `*.example.com` covers subdomains only. List `example.com` separately when the apex domain is explicitly in scope.
 
-```text
-*.example.com
-```
-
-covers subdomains only.
-
-If the apex domain is also explicitly in scope, list it separately:
-
-```text
-example.com
-*.example.com
-```
-
-### Scope enforcement
-
-BelTu-Agent applies scope checks at multiple stages.
+BelTu-Agent applies scope in multiple places:
 
 ```text
 scope validation
-      ↓
-in-scope discovery assets
-      ↓
-in-scope crawler input
-      ↓
-native crawler scope controls where supported
-      ↓
-post-crawl URL filtering
-      ↓
-in-scope vulnerability inputs
+    -> in-scope discovery assets
+    -> in-scope crawling inputs
+    -> Katana native crawl-scope restriction when supported
+    -> post-filter normalized URLs
+    -> in-scope vulnerability targets
 ```
 
-This is intentionally layered.
+This is intentionally defense-in-depth. Raw discovery/provider output may still be retained for auditability, but out-of-scope hosts are not intentionally fed into active probing/crawling/scanning when a scope file is supplied.
 
-The crawler is not intended to freely follow unrelated external hosts and rely only on filtering the results afterward.
-
-The scope file is copied into the run directory so that a resumed run retains the original allowlist:
-
-```text
-metadata/scope.txt
-```
-
-## Scope format
-
-Currently supported entries are:
-
-```text
-example.com
-api.example.com
-*.example.com
-```
-
-Comments are supported:
-
-```text
-# Production scope
-example.com
-*.example.com
-```
-
-The parser is intentionally structured so future versions can add exclusion entries such as:
-
-```text
-!admin.example.com
-```
-
-without redesigning the scope engine.
+The scope parser is deliberately domain-based. Its wildcard engine is structured so future exclusions such as `!admin.example.com` can be added without replacing the whole matcher.
 
 ## CLI usage
 
@@ -416,93 +238,31 @@ without redesigning the scope engine.
 beltu -t example.com -d
 ```
 
-Pipeline:
-
-```text
-subfinder
-→ assetfinder
-→ amass
-→ deduplication
-→ scope filtering
-→ httpx
-```
-
 ### Crawling and parameter mining
-
-```bash
-beltu -t example.com -a
-```
-
-With scope:
 
 ```bash
 beltu -t example.com -a --scope scope.txt
 ```
 
-Pipeline:
-
-```text
-live hosts from -d
-        ↓
-scope enforcement
-        ↓
-katana + gau + waybackurls + hakrawler
-        ↓
-URL normalization
-        ↓
-deduplication
-        ↓
-parameter extraction
-```
-
 ### Vulnerability checks
 
 ```bash
-beltu -t example.com -v
-```
-
-With conservative controls:
-
-```bash
-beltu -t example.com -v \
-  --threads 5 \
-  --rate-limit 3 \
-  --timeout 10 \
-  --retries 1
+beltu -t example.com -v --rate-limit 3 --threads 5
 ```
 
 ### Full pipeline
 
 ```bash
-beltu -t example.com -f
-```
-
-With scope:
-
-```bash
 beltu -t example.com -f --scope scope.txt
 ```
 
-Pipeline:
-
-```text
-Discovery
-→ Live Hosts
-→ Crawling
-→ URL Processing
-→ Parameters
-→ Vulnerability Checks
-→ Analysis
-→ Reporting
-```
-
-### Explicit installation
+### Explicit dependency installation
 
 ```bash
 beltu -t example.com -f --install
 ```
 
-### No installation
+### Disable dependency installation
 
 ```bash
 beltu -t example.com -f --no-install
@@ -514,19 +274,22 @@ beltu -t example.com -f --no-install
 beltu -t example.com -f --dry-run --no-install
 ```
 
-### Resume
+Dry run performs argument/config/scope validation and prints the planned stages and required dependency list. It does **not** execute dependency binaries, scanners, crawlers, or package installation.
+
+These combinations are rejected:
 
 ```bash
-beltu --resume recon_example.com_20260911_010000
+beltu -t example.com -f --dry-run --install
+beltu -t example.com -f --install --no-install
 ```
 
-You can also specify a stage selection when needed:
+### Resume
 
 ```bash
 beltu --resume recon_example.com_20260911_010000 -f
 ```
 
-When no explicit mode is supplied with `--resume`, BelTu-Agent uses the full pipeline and skips stages already marked `completed`.
+When `--resume` is supplied without a stage flag, the full pipeline is selected and already-completed modules are skipped.
 
 ### Help and version
 
@@ -535,120 +298,38 @@ beltu --help
 beltu --version
 ```
 
-## Command-line options
+## Runtime controls
 
-### Legacy-compatible options
-
-```text
--t, --target DOMAIN
--d
--a
--v
--f
--h, --help
-```
-
-### Additional options
+The defaults are intentionally conservative:
 
 ```text
---scope FILE
---config FILE
---resume DIR
---threads N
---rate-limit N
---timeout N
---retries N
---max-injection-targets N
---install
---no-install
---dry-run
---verbose
---version
+threads:                 10
+rate-limit:               5
+request/tool timeout:    10 seconds
+retries:                  1
+commix sample:           20 parameterized URLs
 ```
 
-## Numeric safety limits
+Upper bounds are enforced:
 
-BelTu-Agent validates numeric configuration values before running.
+| Option | Allowed range | Default |
+|---|---:|---:|
+| `--threads` | `1..100` | `10` |
+| `--rate-limit` | `1..1000` | `5` |
+| `--timeout` | `1..300` seconds | `10` |
+| `--retries` | `0..5` | `1` |
+| `--max-injection-targets` | `1..100` | `20` |
 
-Current supported bounds:
+`--rate-limit` and `--threads` are **per-tool request rate/concurrency controls where the selected tool supports them**. BelTu-Agent does not claim to implement a single global network-wide requests-per-second limiter.
 
-```text
---threads                1..100
---rate-limit             1..1000
---timeout                1..300 seconds
---retries                0..5
---max-injection-targets  1..100
-```
-
-Examples of invalid input:
-
-```bash
-beltu -t example.com -d --threads 999999999
-```
-
-```bash
-beltu -t example.com -d --timeout 0
-```
-
-```bash
-beltu -t example.com -v --retries 999
-```
-
-These values are rejected before scanning begins.
-
-## Rate limiting and concurrency
-
-The controls are deliberately conservative by default:
-
-```text
-threads: 10
-rate-limit: 5
-timeout: 10
-retries: 1
-```
-
-The description of `--rate-limit` is intentionally limited:
-
-> **Per-tool request rate/concurrency controls where supported**
-
-It is **not** a claim of a universal network-wide requests-per-second limiter.
-
-Different security tools expose different concurrency and rate controls, so BelTu-Agent maps the configuration to individual tools where their CLI supports it.
-
-Increasing these values never overrides the target program's own rules.
-
-Always follow the scope and rate restrictions of the authorized engagement.
-
-## Bounded command-injection testing
-
-`commix` operates on a bounded sample of parameterized URLs.
-
-Default:
-
-```text
-20 targets
-```
-
-Configure it with:
-
-```bash
-beltu -t example.com -v --max-injection-targets 10
-```
-
-The bound exists to prevent an accidental large-scale command-injection probe.
+Increasing these values never overrides the target's program rules or published rate limits.
 
 ## Configuration
 
-Copy the example file:
+Copy the example:
 
 ```bash
 cp config/beltu.conf.example config/beltu.conf
-```
-
-Use it with:
-
-```bash
-beltu -t example.com -f --config config/beltu.conf
 ```
 
 Supported settings:
@@ -663,75 +344,86 @@ NO_INSTALL=0
 VERBOSE=0
 ```
 
-CLI arguments take precedence over configuration values.
+Use:
 
-This precedence is maintained regardless of the argument order.
-
-## Target validation
-
-Targets are intentionally restricted to bare domains/subdomains.
-
-Supported examples:
-
-```text
-example.com
-api.example.com
-test.api.example.com
+```bash
+beltu -t example.com -f --config config/beltu.conf
 ```
 
-The following are rejected:
+Command-line values take precedence over configuration-file values.
+
+## Tool validation and compatibility
+
+Finding an executable named `httpx` or `nuclei` is not considered sufficient. BelTu-Agent validates the discovered executable and checks the help/version interface for flags used by the current adapter.
+
+The validation covers invocation-critical options for the core tools, including output handling, input-list handling, timeout/retry controls, and scanner-specific controls. A tool can therefore be reported as:
 
 ```text
-https://example.com
-http://example.com
-example.com/path
-example.com:443
-example .com
-example.com;id
-example.com|id
+[+] httpx detected
+    Version: ...
 ```
 
-The validation rejects shell metacharacters and does not use `eval`.
+or:
 
-Commands are passed to tools as Bash arrays rather than constructing executable command strings.
+```text
+[!] httpx found but validation failed
+```
 
-## URL processing
+A validation failure does not silently turn into a fake successful scan. The affected module records the unavailable tool and continues with other independent tools where possible.
 
-BelTu-Agent performs URL normalization and deduplication before parameter analysis.
+Because these are external tools, upstream CLI changes can still require an adapter update.
+
+## Failure handling and state
+
+Each module records one of:
+
+```text
+not_run
+running
+completed
+partial
+failed
+skipped
+```
+
+A failed tool does not automatically abort unrelated tools. Critical input/output failures still stop the run early.
+
+### Deep enumeration classification
+
+The discovery module tracks enumeration-tool successes/failures and the HTTP probing result separately. The presence of the target seed alone does not make the module successful.
 
 For example:
 
 ```text
-https://example.com/api/user?id=1
-https://example.com/api/user?id=2
-https://example.com/api/user?id=3
+subfinder failed
+assetfinder failed
+amass failed
+httpx failed
 ```
 
-are preserved as distinct raw URLs while allowing the analysis layer to identify:
+is recorded as `failed`, not `partial` merely because the target seed exists.
+
+A mixture of successful and failed components is recorded as `partial`.
+
+## Resume and accumulated duration
+
+State is stored in:
 
 ```text
-Endpoint:
-/api/user
-
-Parameter:
-id
+metadata/state.tsv
 ```
 
-Generated artifacts include:
+`run.json` retains the original start time, cumulative duration, and resume count.
+
+For example, after a previous 12-second run followed by a resume, the new duration is based on:
 
 ```text
-urls/all_urls.txt
-urls/urls_with_params.txt
-urls/unique_endpoints.txt
-urls/parameterized_endpoints.txt
-urls/unique_parameters.txt
+previous accumulated duration + current resume segment
 ```
 
-The URL processor does not arbitrarily rewrite parameter values during normalization.
+Completed modules are skipped. Failed or partial modules can be rerun.
 
 ## Output structure
-
-A typical run produces:
 
 ```text
 recon_example.com_TIMESTAMP/
@@ -779,489 +471,262 @@ recon_example.com_TIMESTAMP/
 └── report.pdf
 ```
 
-Raw outputs remain available for manual investigation.
+## Tool logging
 
-## Logging
+Each tool invocation records:
 
-Each tool invocation records structured information including:
+- UTC start/end timestamps
+- Tool name
+- Quoted command representation
+- Result path, when applicable
+- Stdout log path
+- Stderr log path
+- Input count
+- Duration
+- Exit code
 
-* UTC timestamp
-* Tool name
-* Command representation
-* Input count
-* Output path
-* stderr path
-* Start time
-* End time
-* Duration
-* Exit code
+For tools with an explicit `-o`/output argument, the result file is owned by the tool. BelTu-Agent captures stdout and stderr separately and does not redirect stdout into the same result path.
 
-Example:
+## URL processing
 
-```text
-start_epoch=...
-end_epoch=...
-duration_seconds=...
-exit_code=0
-```
+The URL pipeline retains raw provider outputs and then creates normalized, deduplicated data sets.
 
-Tool stdout and stderr are stored separately where applicable.
-
-BelTu-Agent intentionally does not hide tool errors behind blanket `2>/dev/null` redirection.
-
-## State tracking
-
-Module state is stored in:
+The parameter stage produces:
 
 ```text
-metadata/state.tsv
-```
-
-Supported module states include:
-
-```text
-not_run
-running
-completed
-partial
-failed
-skipped
-```
-
-Example:
-
-```text
-deep_enum    completed
-url_crawl    completed
-vuln_scan    partial
-report       not_run
-```
-
-A module is skipped during resume only when its state is `completed`.
-
-Failed or partial stages can be rerun.
-
-## Resume behavior
-
-Resume is designed for interrupted or partially completed runs.
-
-Example:
-
-```bash
-beltu --resume recon_example.com_20260911_010000
-```
-
-The run retains:
-
-```text
-original start time
-resume time
-accumulated duration
-module state
-original scope snapshot
-```
-
-This prevents the runtime in `run.json` from being reset to zero when a run is resumed.
-
-Resume does not require rebuilding completed stages unnecessarily.
-
-## `run.json`
-
-Each run contains machine-readable metadata:
-
-```text
-metadata/run.json
-```
-
-Example structure:
-
-```json
-{
-  "tool": "BelTu-Agent",
-  "version": "1.1.1",
-  "target": "example.com",
-  "started_at": "2026-09-11T00:00:00Z",
-  "finished_at": "2026-09-11T00:12:00Z",
-  "mode": "full",
-  "status": "completed",
-  "dry_run": 0,
-  "scope_file": "metadata/scope.txt",
-  "output_directory": "recon_example.com_20260911_000000",
-  "duration_seconds": 720,
-  "modules": {
-    "deep_enum": "completed",
-    "url_crawl": "completed",
-    "vuln_scan": "completed",
-    "report": "completed"
-  }
-}
-```
-
-Runtime values shown above are examples only.
-
-## Deep enumeration status
-
-BelTu-Agent distinguishes between:
-
-```text
-completed
-partial
-failed
-```
-
-A target seed by itself does not count as a successful enumeration result.
-
-For example, if:
-
-```text
-subfinder   failed
-assetfinder failed
-amass       failed
-httpx       failed
-```
-
-the discovery stage is not reported as successful merely because the original target exists as a seed.
-
-A stage can be marked `partial` when some meaningful processing succeeded while one or more tools failed.
-
-## Vulnerability scanning status
-
-Each scanner is tracked independently:
-
-```text
-nuclei
-kxss
-dalfox
-commix
-```
-
-Possible states include:
-
-```text
-completed
-failed
-skipped
-```
-
-Scanner output is treated as automated detection and not automatically as confirmed vulnerability evidence.
-
-## Zero findings versus scanner failure
-
-The report explicitly distinguishes:
-
-```text
-0 findings
-```
-
-from:
-
-```text
-Scanner failed
-```
-
-and:
-
-```text
-Scanner skipped/unavailable
+urls_with_params.txt
+unique_endpoints.txt
+parameterized_endpoints.txt
+unique_parameters.txt
 ```
 
 For example:
 
 ```text
-Nuclei: Scanner failed.
-Severity counts are not interpreted as zero.
+/api/user?id=1
+/api/user?id=2
+/api/user?id=3
 ```
 
-A successful Nuclei scan with no detections may instead report:
+can be represented as one endpoint plus the `id` parameter while the original URL values remain available in the raw/parameterized URL artifacts.
+
+## Vulnerability scanning
+
+The vulnerability module keeps the existing scanners:
 
 ```text
-Critical: 0
-High: 0
-Medium: 0
-Low: 0
-Informational: 0
+Nuclei Scanner
+XSS Reflection Analyzer (kxss)
+Dalfox XSS Scanner
+Command Injection Probe (commix)
 ```
 
-These are materially different outcomes.
+`commix` is intentionally bounded by `--max-injection-targets` and defaults to 20 parameterized URLs.
 
-## Reports
+Every scanner records a status and exit code. A failed scanner is **not** represented as zero findings.
 
-The reporting pipeline can generate:
+Automated detections are candidates for manual verification. BelTu-Agent does not invent a final severity for findings that do not provide one.
 
-```text
-report.md
-report.html
-report.pdf
-```
+## Reporting
 
 The report contains:
 
 ### Executive Summary
 
-```text
-Target
-Assessment Date
-Tool Version
-Scan Mode
-Overall Status
-```
+- Target
+- Assessment date
+- Scan mode
+- Overall status
 
 ### Attack Surface
 
-```text
-Subdomains
-Live Hosts
-URLs
-Parameterized URLs
-Unique Endpoints
-Unique Parameters
-```
+- Unique subdomains/seed hosts
+- In-scope hosts
+- Live hosts
+- Unique URLs
+- Parameterized URLs
+- Unique endpoints
+- Unique parameters
 
 ### Findings Summary
 
-Severity counts are presented only when supported by structured scanner output.
+Nuclei severity buckets are shown from its structured output when the scanner completes:
 
-BelTu-Agent does not invent or infer severity values.
+```text
+Critical
+High
+Medium
+Low
+Informational
+```
 
-### Scanner Results
-
-Each scanner includes its status and raw-evidence reference.
+A failed or skipped scanner is reported explicitly rather than interpreted as a clean result.
 
 ### Tool Coverage
 
-The report records:
+The report distinguishes:
 
 ```text
 validated
-missing
 found, validation failed
+missing
 not required
 ```
 
-### Module Status
-
-The report shows:
-
-```text
-Deep Enumeration
-URL Crawling
-Vulnerability Scanning
-Reporting
-```
+and scanner-level status where applicable.
 
 ### Raw Evidence
 
-The report points to the raw outputs and logs rather than unnecessarily copying entire scanner output into the document.
+The report references the raw result and log files instead of dumping unrestricted tool output into the document.
 
 ### Verification Guidance
 
-Automated detections should be manually reproduced and verified before being treated as confirmed findings.
+Automated results require manual reproduction, scope confirmation, impact validation, and final severity assessment before disclosure or remediation.
 
-## Automated detection disclaimer
+## `run.json`
 
-BelTu-Agent is an orchestration and automation tool.
+Each run includes machine-readable metadata similar to:
 
-Automated results can contain:
-
-```text
-false positives
-false negatives
-stale historical data
-scanner-specific errors
-incomplete coverage
+```json
+{
+  "tool": "BelTu-Agent",
+  "version": "1.1.2",
+  "target": "example.com",
+  "started_at": "2026-09-11T00:00:00Z",
+  "finished_at": "2026-09-11T00:02:10Z",
+  "mode": "full",
+  "status": "completed",
+  "dry_run": 0,
+  "scope_file": "metadata/scope.txt",
+  "output_directory": "recon_example.com_20260911_000000",
+  "duration_seconds": 130,
+  "resume_count": 0
+}
 ```
 
-An automated detection is not automatically a confirmed security vulnerability.
-
-Likewise:
-
-```text
-0 findings
-```
-
-does not prove that the target is secure.
-
-## Security design
-
-BelTu-Agent intentionally avoids:
-
-```text
-eval
-command-string execution
-credential theft
-destructive operations
-stealth/evasion
-authorization bypass
-external result uploads
-hardcoded API keys
-```
-
-The target is validated before commands are constructed, and external commands are invoked using Bash arrays with explicit quoting.
-
-## Screenshots
-
-The repository does not claim screenshots that have not actually been captured.
-
-Recommended GitHub screenshots:
-
-```text
-docs/screenshots/
-├── cli-dry-run.png
-├── dependency-validation.png
-├── full-pipeline.png
-└── report-overview.png
-```
+The file also includes module statuses, attack-surface statistics, and scanner statuses.
 
 ## Testing
 
-Run the built-in test suite:
+The project includes a dependency-free Bash regression suite:
 
 ```bash
 ./tests/test_beltu.sh
 ```
 
-Or:
+It covers:
 
-```bash
-make test
-```
+- Bash syntax
+- `--version` and `--help`
+- target validation
+- shell metacharacter rejection
+- module selection
+- dependency mapping
+- dry-run/install conflicts
+- dry-run side-effect protection against dependency execution
+- numeric bounds
+- scope matching and filtering
+- Katana native scope pattern generation
+- `run_tool_output_arg` output separation
+- deep enumeration failure classification
+- resume duration/state handling
+- README consistency checks
 
-The test suite covers critical behavior including:
+ShellCheck is run automatically by the test suite when the `shellcheck` executable is available.
 
-```text
-Bash syntax
-CLI compatibility
-target validation
-shell metacharacter rejection
-module selection
-dependency mapping
-scope matching
-scope filtering
-crawler scope enforcement
-dry-run behavior
-install conflicts
-numeric bounds
-output handling
-deep enumeration status classification
-resume behavior
-run metadata
-```
+## Screenshots
 
-When available, the test suite can also run ShellCheck validation.
-
-### Basic manual tests
-
-Syntax:
-
-```bash
-bash -n BelTu-Agent.sh
-```
-
-Version:
-
-```bash
-./BelTu-Agent.sh --version
-```
-
-Help:
-
-```bash
-./BelTu-Agent.sh --help
-```
-
-Dry run:
-
-```bash
-./BelTu-Agent.sh \
-  -t example.com \
-  -f \
-  --dry-run \
-  --no-install
-```
-
-Expected behavior:
+Add real screenshots after testing the project in your own environment:
 
 ```text
-No scanning
-No tool execution
-No dependency installation
+docs/screenshots/
+├── cli-dry-run.png
+├── full-pipeline.png
+└── report-overview.png
 ```
 
-Invalid dry-run combination:
-
-```bash
-./BelTu-Agent.sh \
-  -t example.com \
-  -f \
-  --dry-run \
-  --install
-```
-
-Expected:
-
-```text
-[x] --dry-run cannot be combined with --install
-```
-
-Invalid installation combination:
-
-```bash
-./BelTu-Agent.sh \
-  -t example.com \
-  -f \
-  --install \
-  --no-install
-```
-
-Expected:
-
-```text
-[x] --install and --no-install cannot be used together
-```
+The repository does not claim screenshots that were not actually captured.
 
 ## Troubleshooting
 
+### `beltu: command not found`
+
+Check whether the user-local command exists:
+
+```bash
+ls -l ~/.local/bin/beltu
+command -v beltu
+```
+
+If it exists but is not found, add the local bin directory to your current shell:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Then verify:
+
+```bash
+beltu --version
+```
+
+If the direct script reports `Permission denied`, restore its execute bit:
+
+```bash
+chmod +x BelTu-Agent.sh
+```
+
+Then reinstall the user-local command:
+
+```bash
+make install-local
+```
+
 ### `httpx found but validation failed`
 
-Make sure the executable is ProjectDiscovery `httpx`, not another executable named `httpx`.
-
-Check:
+Make sure the executable is ProjectDiscovery `httpx`, not another program named `httpx`:
 
 ```bash
 command -v httpx
 httpx -version
 ```
 
-### A security tool is missing
+### `--dry-run` refuses `--install`
 
-Check the selected module.
-
-For example:
+This is intentional. Dry run is designed to avoid installation and scanning side effects:
 
 ```bash
-beltu -t example.com -d --no-install
+beltu -t example.com -f --dry-run --no-install
 ```
 
-only requires the discovery dependencies.
+### Scope blocks a host
 
-Use:
+Check the scope file. For a wildcard entry such as:
 
-```bash
-beltu -t example.com -f --install
+```text
+*.example.com
 ```
 
-to explicitly allow installation of dependencies required by the full pipeline.
+remember that the apex `example.com` is not covered by that wildcard entry and must be listed separately when required.
 
-### Go tools are installed but not found
+### A scanner shows `failed` instead of `0 findings`
 
-Check:
+Open the corresponding stderr/tool log. BelTu-Agent keeps scanner errors visible and does not convert them into a zero-finding claim.
 
-```bash
-echo "$PATH"
-echo "$HOME/go/bin"
+### Resume metadata is missing
+
+The resume directory must contain at least:
+
+```text
+metadata/target.txt
+metadata/state.tsv
 ```
 
-You can persist the Go binary path:
+`metadata/run.json` is used when available to preserve accumulated duration and resume count.
+
+### Go tools install but are not found in future shells
+
+Persist the Go user bin directory if needed:
 
 ```bash
 echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.bashrc
@@ -1270,128 +735,35 @@ source ~/.bashrc
 
 ### PDF is missing
 
-Check:
+Check that both `pandoc` and `weasyprint` are available and inspect:
 
 ```text
 logs/tools/report_pandoc.stderr.log
 logs/tools/report_weasyprint.stderr.log
 ```
 
-Also verify:
-
-```bash
-pandoc --version
-weasyprint --version
-```
-
-### A scanner reports `failed`
-
-Inspect:
-
-```text
-logs/tools/
-```
-
-especially the corresponding:
-
-```text
-*.stderr.log
-*.log
-```
-
-BelTu-Agent intentionally preserves tool errors for troubleshooting.
-
-### Resume fails
-
-The resume directory must contain:
-
-```text
-metadata/target.txt
-metadata/state.tsv
-```
-
-Example:
-
-```bash
-beltu --resume recon_example.com_20260911_010000
-```
-
-### Scope rejects the target
-
-Confirm that the target or its parent scope is explicitly listed.
-
-Example:
-
-```text
-example.com
-*.example.com
-```
-
-Remember that:
-
-```text
-*.example.com
-```
-
-does not by itself include the apex:
-
-```text
-example.com
-```
-
 ## Limitations
 
-* BelTu-Agent depends on external security tools whose upstream CLI interfaces may change.
-* Tool compatibility validation reduces silent failures but cannot guarantee long-term compatibility with every future release.
-* Historical URL providers may return stale or duplicated data.
-* Crawlers and scanners have different semantics for concurrency and rate controls.
-* `--rate-limit` is not a universal network-wide rate limiter.
-* Parameter mining is intentionally lightweight and does not replace manual application mapping.
-* Scope syntax currently supports exact domains and `*.example.com`-style wildcards.
-* Automated findings require manual verification.
-* Commix is intentionally bounded.
-* PDF generation depends on Pandoc/WeasyPrint availability.
-* The tool does not guarantee complete security-test coverage.
+- External security tools can change their CLI interfaces upstream.
+- Historical URL sources can return stale or duplicate data.
+- Automated findings are not proof of exploitability.
+- Parameter mining is intentionally lightweight and does not replace manual application mapping.
+- Scope matching is domain-oriented and intentionally does not implement arbitrary program-specific wildcard syntax.
+- `commix` is deliberately bounded.
+- `--rate-limit` is not a global network-wide limiter; it is passed to individual tools where those tools support the relevant control.
 
 ## Roadmap
 
-Possible future improvements include:
-
-* Scope exclusions such as `!admin.example.com`
-* More fixture-based URL parser tests
-* Additional structured report formats such as CSV or SARIF
-* Local per-program configuration profiles
-* More resilient upstream CLI compatibility adapters
-* Expanded reporting analytics
-* Additional regression fixtures for uncommon URL forms
+- Additional fixture-based URL parser tests
+- Optional local CSV/SARIF exports
+- Local per-program rate-limit profiles
+- More resilient adapter checks as upstream CLIs evolve
+- Explicit scope exclusion rules such as `!admin.example.com`
 
 ## License
 
-MIT License. See [`LICENSE`](LICENSE).
+MIT. See [`LICENSE`](LICENSE).
 
 ## Legal disclaimer
 
-You are solely responsible for ensuring that you have permission to test every target.
-
-BelTu-Agent is intended for:
-
-```text
-authorized security assessments
-bug bounty programs
-security labs
-training environments
-systems you own
-```
-
-Do not use BelTu-Agent against systems without explicit authorization.
-
-The existence of a technical capability in the project does not grant permission to use it against a target.
-
-Always follow:
-
-```text
-program scope
-rate limits
-terms of service
-applicable law
-```
+You are solely responsible for ensuring that you have permission to test every target. This project is intended for authorized security assessments, bug bounty programs, labs, and environments where the operator has explicit authorization.
