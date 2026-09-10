@@ -126,7 +126,7 @@ Target validation
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/BelTu-Agent.git
+git clone https://github.com/abdulrhmsnadel/BelTu-Agent.git
 cd BelTu-Agent
 chmod +x BelTu-Agent.sh
 ```
