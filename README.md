@@ -104,6 +104,3 @@ require manual review before being submitted to any bug bounty program or
 treated as confirmed vulnerabilities. The author assumes no liability for
 misuse of this tool.
 
-## License
-
-MIT — see `LICENSE`.
