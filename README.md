@@ -43,7 +43,7 @@ your jurisdiction. You are solely responsible for how you use this tool.
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/BelTu-Agent.git
+git clone https://github.com/abdulrhmsnadel/BelTu-Agent.git
 cd BelTu-Agent
 chmod +x BelTu-Agent.sh
 ```
