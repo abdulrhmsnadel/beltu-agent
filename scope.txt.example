@@ -1,0 +1,4 @@
+# Authorized scope example
+example.com
+*.example.com
+api.example.com
