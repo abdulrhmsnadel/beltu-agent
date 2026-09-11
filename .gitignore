@@ -1,0 +1,19 @@
+# BelTu-Agent runtime output
+recon_*/
+*.log
+*.stdout.log
+*.stderr.log
+report.pdf
+report.html
+report.md
+
+# Local editor / OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test/runtime temporary files
+/tmp/
+
+.beltu-tools/

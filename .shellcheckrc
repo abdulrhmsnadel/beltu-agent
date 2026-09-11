@@ -1,0 +1,2 @@
+# Keep checks useful across Bash 4+ environments.
+severity=warning
