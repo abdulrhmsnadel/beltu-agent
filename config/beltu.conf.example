@@ -1,0 +1,14 @@
+# BelTu-Agent 1.1.2 configuration
+# Values are KEY=VALUE. Lines beginning with # are comments.
+
+THREADS=10
+RATE_LIMIT=5
+TIMEOUT=10
+RETRIES=1
+MAX_INJECTION_TARGETS=20
+
+# Set to 1 to never install dependencies interactively.
+NO_INSTALL=0
+
+# Set to 1 for verbose BelTu-Agent messages.
+VERBOSE=0
