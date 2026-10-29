@@ -1,0 +1,27 @@
+name: Shell CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+      - name: Bash syntax
+        run: bash -n BelTu-Agent.sh tests/test_beltu.sh
+      - name: ShellCheck
+        run: shellcheck -x BelTu-Agent.sh tests/test_beltu.sh
+      - name: Test suite
+        run: make test

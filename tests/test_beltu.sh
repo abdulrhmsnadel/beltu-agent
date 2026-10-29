@@ -38,6 +38,13 @@ if bash -n "$SCRIPT"; then pass 'bash syntax'; else fail 'bash syntax'; fi
 if ! grep -qE '^[[:space:]]*eval([[:space:]]|$)' "$SCRIPT"; then pass 'no eval'; else fail 'no eval'; fi
 run_expect_success '--version' "$SCRIPT" --version
 run_expect_success '--help' "$SCRIPT" --help
+help_output="$TMP/help.txt"
+if capture "$help_output" "$SCRIPT" --help && ! grep -qi 'scope' "$help_output"; then
+    pass 'help omits removed allowlist interface'
+else
+    fail 'help omits removed allowlist interface'
+fi
+run_expect_failure 'removed allowlist option rejected' "$SCRIPT" -t example.com -d --dry-run --no-install --scope "$TMP/old-allowlist.txt"
 run_expect_success 'legacy source-only environment cannot disable execution' env BELTU_SOURCE_ONLY=1 "$SCRIPT" --version
 
 # ShellCheck is optional in lightweight environments; run it when available.
@@ -69,6 +76,7 @@ if [[ ! -e "$TMP/dryrun-marker" ]]; then pass 'dry-run left dependency side effe
 
 # -----------------------------------------------------------------------------
 # Numeric bounds
+if grep -Fq 'scan -i file "$param_urls"' "$SCRIPT" && grep -Fq '(( dalfox_rc == 1 ))' "$SCRIPT"; then pass 'Dalfox file input and findings exit code handled'; else fail 'Dalfox file input and findings exit code handled'; fi
 # -----------------------------------------------------------------------------
 run_expect_success 'threads lower bound accepted' "$SCRIPT" -t example.com -d --dry-run --no-install --threads 1
 run_expect_success 'threads upper bound accepted' "$SCRIPT" -t example.com -d --dry-run --no-install --threads 100
@@ -123,7 +131,7 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Scope filtering and Katana native scope rules (functions under test)
+# Built-in target-domain boundary and Katana target regex
 # -----------------------------------------------------------------------------
 # shellcheck disable=SC1091
 source "$SCRIPT"
@@ -131,7 +139,7 @@ declare -f run_tool_output_arg > "$TMP/original_run_tool_output_arg.sh"
 declare -f run_tool_named_output > "$TMP/original_run_tool_named_output.sh"
 declare -f run_tool_stdin > "$TMP/original_run_tool_stdin.sh"
 declare -f require_tool > "$TMP/original_require_tool.sh"
-# Tool discovery must search the project tool directory even when the shell PATH does not.
+# Tool discovery must search the project tool directory even when shell PATH does not.
 LOCAL_TOOL_DIR="$TMP/project-tools/bin"
 mkdir -p "$LOCAL_TOOL_DIR"
 cat > "$LOCAL_TOOL_DIR/beltu-test-tool" <<'EOF_TOOL'
@@ -143,47 +151,34 @@ TOOL_BIN_DIR="$LOCAL_TOOL_DIR"
 LOCAL_CARGO_BIN_DIR="$ROOT/.beltu-tools/cargo/bin"
 GOBIN_DIR="$ROOT/.does-not-exist/go-bin"
 CARGO_BIN_DIR="$ROOT/.does-not-exist/cargo-bin"
-if [[ "$(resolve_tool beltu-test-tool)" == "$LOCAL_TOOL_DIR/beltu-test-tool" ]]; then
-    pass 'local project tool resolution'
-else
-    fail 'local project tool resolution'
-fi
+if [[ "$(resolve_tool beltu-test-tool)" == "$LOCAL_TOOL_DIR/beltu-test-tool" ]]; then pass 'local project tool resolution'; else fail 'local project tool resolution'; fi
 rm -f "$LOCAL_TOOL_DIR/beltu-test-tool"
 
-SCOPE_FILE="$TMP/scope.txt"
-printf '%s\n' 'example.com' '*.example.com' > "$SCOPE_FILE"
-if is_in_scope 'example.com' && is_in_scope 'api.example.com' && ! is_in_scope 'example.org'; then
-    pass 'scope matching'
+TARGET='example.com'
+if target_domain_match 'example.com' && target_domain_match 'api.example.com' && ! target_domain_match 'notexample.com' && ! target_domain_match 'example.org'; then
+    pass 'target-domain matching enforces DNS label boundaries'
 else
-    fail 'scope matching'
+    fail 'target-domain matching enforces DNS label boundaries'
 fi
 
-scope_urls_in="$TMP/scope-input.txt"
-scope_urls_out="$TMP/scope-output.txt"
-printf '%s\n' \
-    'https://example.com/' \
-    'https://api.example.com/v1' \
-    'https://evil.example.org/' > "$scope_urls_in"
-filter_in_scope_url_list "$scope_urls_in" "$scope_urls_out"
-if grep -qx 'https://example.com/' "$scope_urls_out" && \
-   grep -qx 'https://api.example.com/v1' "$scope_urls_out" && \
-   ! grep -q 'evil.example.org' "$scope_urls_out"; then
-    pass 'scope URL filtering'
+target_urls_in="$TMP/target-input.txt"
+target_urls_out="$TMP/target-output.txt"
+printf '%s\n' 'https://example.com/' 'https://api.example.com/v1' 'https://notexample.com/' 'https://evil.example.org/' > "$target_urls_in"
+filter_target_url_list "$target_urls_in" "$target_urls_out"
+if grep -qx 'https://example.com/' "$target_urls_out" && grep -qx 'https://api.example.com/v1' "$target_urls_out" && ! grep -q 'notexample.com\|evil.example.org' "$target_urls_out"; then
+    pass 'URL lists filtered to target domain'
 else
-    fail 'scope URL filtering'
+    fail 'URL lists filtered to target domain'
 fi
 
-katana_scope="$TMP/katana-scope.txt"
-if build_katana_scope_file "$katana_scope" && \
-   grep -Fq 'https?://example\.com' "$katana_scope" && \
-   grep -Fq '([A-Za-z0-9-]+\.)+example\.com' "$katana_scope"; then
-    pass 'Katana native scope pattern generated'
+katana_target="$TMP/katana-target.txt"
+if build_katana_target_regex_file "$katana_target" && grep -Fq '^https?://example\.com' "$katana_target" && grep -Fq '([A-Za-z0-9-]+\.)+example\.com' "$katana_target"; then
+    pass 'Katana target regex includes apex and subdomains'
 else
-    fail 'Katana native scope pattern generated'
+    fail 'Katana target regex includes apex and subdomains'
 fi
 
-# The actual crawl module must pass the generated scope file to Katana and only
-# use in-scope seed URLs before the crawler starts.
+# The crawl module must filter external seeds and always pass its target regex to Katana.
 crawl_test_out="$TMP/crawl-run"
 crawl_test_tmp="$TMP/crawl-tmp"
 mkdir -p "$crawl_test_out/urls" "$crawl_test_out/subdomains" "$crawl_test_out/vulnerabilities" "$crawl_test_out/metadata" "$crawl_test_out/logs/tools" "$crawl_test_tmp"
@@ -194,7 +189,6 @@ TOOL_LOG_ROOT="$crawl_test_out/logs/tools"
 STATE_FILE="$crawl_test_out/metadata/state.tsv"
 RUN_JSON="$crawl_test_out/metadata/run.json"
 TARGET='example.com'
-SCOPE_FILE="$TMP/scope.txt"
 THREADS=10
 RATE_LIMIT=5
 TIMEOUT=10
@@ -206,33 +200,25 @@ printf '%s\n' 'https://api.example.com' 'https://evil.example.org' > "$crawl_tes
 : > "$crawl_test_out/urls/unique_parameters.txt"
 : > "$crawl_test_out/urls/parameterized_endpoints.txt"
 KATANA_CAPTURE="$TMP/katana-capture.txt"
-run_tool_output_arg() {
-    local module="$1" tool="$2" result="$3" input_count="$4"; shift 4
-    printf '%s\n' "$tool" "$*" > "$KATANA_CAPTURE"
-    : > "$result"
-    return 0
-}
+run_tool_output_arg() { local module="$1" tool="$2" result="$3" input_count="$4"; shift 4; printf '%s\n' "$tool" "$*" > "$KATANA_CAPTURE"; : > "$result"; return 0; }
 run_tool_named_output() { local result="$3"; : > "$result"; return 0; }
 run_tool_stdin() { local result="$4"; : > "$result"; return 0; }
 require_tool() { [[ "$1" == 'katana' || "$1" == 'gau' || "$1" == 'waybackurls' || "$1" == 'hakrawler' ]]; }
 if module_url_crawl >/dev/null 2>&1; then
-    if grep -q '^https://api.example.com$' "$crawl_test_tmp/crawl_input.txt" && \
-       ! grep -q 'evil.example.org' "$crawl_test_tmp/crawl_input.txt" && \
-       grep -q -- '-cs' "$KATANA_CAPTURE"; then
-        pass 'crawler scope enforcement before Katana'
+    if grep -qx 'https://api.example.com' "$crawl_test_tmp/crawl_input.txt" && ! grep -q 'evil.example.org' "$crawl_test_tmp/crawl_input.txt" && grep -q -- '-cs' "$KATANA_CAPTURE" && grep -Fq '^https?://example\.com' "$crawl_test_tmp/katana_target.regex"; then
+        pass 'crawler filters seeds and passes target regex to Katana'
     else
-        fail 'crawler scope enforcement before Katana'
+        fail 'crawler filters seeds and passes target regex to Katana'
     fi
 else
-    fail 'crawler scope enforcement module execution'
+    fail 'crawler target-boundary module execution'
 fi
 
-# Restore the real wrappers after crawl interception.
+# Restore original tool wrappers after crawl interception.
 source "$TMP/original_run_tool_output_arg.sh"
 source "$TMP/original_run_tool_named_output.sh"
 source "$TMP/original_run_tool_stdin.sh"
 source "$TMP/original_require_tool.sh"
-
 # -----------------------------------------------------------------------------
 # run_tool_output_arg output ownership: result file comes from -o, stdout stays
 # in stdout log, stderr stays in stderr log.
@@ -284,7 +270,6 @@ TOOL_LOG_ROOT="$OUTDIR/logs/tools"
 STATE_FILE="$OUTDIR/metadata/state.tsv"
 RUN_JSON="$OUTDIR/metadata/run.json"
 TARGET='example.com'
-SCOPE_FILE=''
 TIMEOUT=10
 THREADS=10
 RATE_LIMIT=5
@@ -312,7 +297,7 @@ printf '%s\n' 'deep_enum\tcompleted\t1\t2\t0\t' > "$RESUME_DIR/metadata/state.ts
 cat > "$RESUME_DIR/metadata/run.json" <<'EOF_RUNJSON'
 {
   "tool": "BelTu-Agent",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "target": "example.com",
   "started_at": "2026-09-11T00:00:00Z",
   "finished_at": "2026-09-11T00:00:12Z",
@@ -322,7 +307,7 @@ cat > "$RESUME_DIR/metadata/run.json" <<'EOF_RUNJSON'
   "resume_count": 2
 }
 EOF_RUNJSON
-TARGET=''; SCOPE_FILE=''; RESUME_DIR="$RESUME_DIR"; OUTDIR=''; RUN_ID=''; ACCUMULATED_DURATION=0; RESUME_COUNT=0; ORIGINAL_STARTED_ISO=''; STARTED_EPOCH=0; STARTED_ISO=''
+TARGET=''; RESUME_DIR="$RESUME_DIR"; OUTDIR=''; RUN_ID=''; ACCUMULATED_DURATION=0; RESUME_COUNT=0; ORIGINAL_STARTED_ISO=''; STARTED_EPOCH=0; STARTED_ISO=''
 if load_resume_run; then
     if [[ "$ACCUMULATED_DURATION" == '12' && "$RESUME_COUNT" == '3' && "$STARTED_ISO" == '2026-09-11T00:00:00Z' ]]; then
         pass 'resume preserves accumulated duration and original start'
@@ -343,13 +328,11 @@ fi
 
 # -----------------------------------------------------------------------------
 # README consistency checks
-# -----------------------------------------------------------------------------
 README="$ROOT/README.md"
-if grep -q 'v1.1.2' "$README" || grep -q '\*\*1.1.2\*\*' "$README"; then pass 'README version updated'; else fail 'README version updated'; fi
+if grep -q '^# BelTu-Agent 1.1.3' "$README"; then pass 'README version updated'; else fail 'README version updated'; fi
 if grep -q 'Per-tool request rate/concurrency' "$README"; then pass 'README rate-limit wording'; else fail 'README rate-limit wording'; fi
 if grep -q -- '--dry-run.*--install' "$README"; then pass 'README dry-run/install rule'; else fail 'README dry-run/install rule'; fi
-if grep -q 'Katana.*native\|native.*Katana' "$README"; then pass 'README crawler scope enforcement'; else fail 'README crawler scope enforcement'; fi
-
+if grep -q 'Built-in target boundary' "$README" && ! grep -q 'pyproject.toml\|mobile/' "$README"; then pass 'README matches Bash implementation'; else fail 'README matches Bash implementation'; fi
 # Local launcher installation must work even when the source script is executed via a generated wrapper.
 LAUNCH_HOME="$TMP/launcher-home"
 mkdir -p "$LAUNCH_HOME"
@@ -357,7 +340,7 @@ if (cd "$ROOT" && HOME="$LAUNCH_HOME" PATH=/usr/bin:/bin make install-local >/de
     chmod 0644 "$ROOT/BelTu-Agent.sh"
     launcher_version="$(cd "$TMP" && env -u BELTU_SOURCE_ONLY HOME="$LAUNCH_HOME" PATH="$LAUNCH_HOME/.local/bin:/usr/bin:/bin" "$LAUNCH_HOME/.local/bin/beltu" --version 2>&1)"
     chmod 0755 "$ROOT/BelTu-Agent.sh"
-    if [[ "$launcher_version" == 'BelTu-Agent v1.1.2' ]]; then
+    if [[ "$launcher_version" == 'BelTu-Agent v1.1.3' ]]; then
         pass 'local launcher execution without source executable bit'
     else
         fail 'local launcher execution without source executable bit'
