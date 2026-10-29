@@ -1,4 +1,4 @@
-# BelTu-Agent 1.1.2 configuration
+# BelTu-Agent 1.1.3 configuration
 # Values are KEY=VALUE. Lines beginning with # are comments.
 
 THREADS=10

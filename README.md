@@ -1,188 +1,106 @@
-# BELTU 1.1.0
+# BelTu-Agent 1.1.3
 
-BELTU is a local-first agentic security-testing platform for **explicitly authorized** assessments. It keeps the reasoning loop, persistent state, evidence, reporting, scope controls, approval gates, and tool execution in separate layers so the system can reason over evidence without turning the language model into an unrestricted command runner.
+BelTu-Agent is a Bash-based command-line orchestrator for authorized reconnaissance, URL collection, vulnerability checks, and evidence reporting. The active implementation in this repository is `BelTu-Agent.sh`; this repository is not the separate Python/Flutter BELTU application.
 
-The 1.1.0 upgrade adds a **local FreeToken inference path** and a product-style mobile Command Center. FreeToken is an edge-native MoE serving engine with OpenAI-compatible APIs and CPU/GPU/host-memory execution strategies. Its documented server command is `ft serve`; BELTU deliberately runs its local instance on `127.0.0.1:8000` to keep the BELTU/FreeToken contract isolated.
+## What it does
 
-## What BELTU does
+- **Discovery (`-d`)**: Subfinder, Assetfinder, Amass, then HTTPX for live-host verification.
+- **URL collection (`-a`)**: Katana, gau, waybackurls, and hakrawler; URL normalization, de-duplication, and parameter extraction.
+- **Vulnerability checks (`-v`)**: Nuclei, kxss, Dalfox, and a bounded Commix run over parameterized URLs.
+- **Full pipeline (`-f`)**: discovery → URL collection → vulnerability checks → Markdown/HTML/PDF reporting.
+- Persistent per-run metadata, tool stdout/stderr logs, stage status, and resume support.
 
-```text
-Authorized Target
-      ↓
-Persistent Scan State
-      ↓
-Observe → Hypothesize → Plan → Policy → Act
-      ↓
-Evidence + Correlation
-      ↓
-Re-evaluate / Re-plan
-      ↓
-Findings + Reports
-```
+Automated detections are candidates, not confirmed vulnerabilities. Manually verify findings and impact before reporting them.
 
-BELTU's LLM is a **reasoning component**, not a shell. The model returns structured hypotheses and declarative actions; the scope guard, approval system, capability registry, resource governor, and execution layer decide whether anything can actually run.
+## Built-in target boundary
 
-## Safety defaults
+The `-t` argument accepts a bare domain or subdomain. The built-in boundary accepts only that exact hostname and DNS subdomains ending in `.<target>`. URLs from historical providers and crawler output are filtered to that boundary; Katana also receives an explicit target regex, and active scanners receive target-domain hosts only. For example, a run against `example.com` may include `api.example.com`, but rejects `notexample.com` and `example.org`.
 
-- Targets are default-deny and must be explicitly present in `config/scope.yaml`.
-- High-risk actions require a validated approval record.
-- External tools remain policy-controlled and are **disabled by default** in the repository configuration.
-- FreeToken reasoning is loopback-only; BELTU rejects a non-loopback FreeToken base URL.
-- Remote API binds to `127.0.0.1` by default and requires authentication.
-- Runtime databases, evidence, tokens, model weights, and `.env` files are not meant to be committed to Git.
+Use this tool only for a target and its subdomains that you are authorized to assess. The built-in boundary is a hostname boundary, not proof of ownership, and it does not replace checking the rules of a bug-bounty program.
 
 ## Requirements
 
-### BELTU
+- Bash 4+
+- Git and a package manager supported by the installer (apt, pacman, dnf, or Homebrew)
+- Go for Go-based scanner utilities
+- Optional tools are installed on demand only when explicitly requested or confirmed in an interactive terminal
 
-- Linux (Kali/Ubuntu recommended)
-- Python 3.11+
-- Git
-- `venv` support
-- Python dependencies declared in `pyproject.toml`
+For active use, the selected stages need these tools:
 
-### Security tools
+| Mode | Required utilities |
+|---|---|
+| `-d` | `subfinder`, `assetfinder`, `amass`, `httpx` |
+| `-a` | `katana`, `gau`, `waybackurls`, `hakrawler` |
+| `-v` | `nuclei`, `kxss`, `dalfox`, `commix` |
+| `-f` report | `jq`, `pandoc`, `weasyprint` plus the stage tools |
 
-Install only the tools that match the capabilities you intend to enable:
+Per-tool request rate/concurrency controls are applied where supported.
 
-| Tool | Capability | Purpose |
-|---|---|---|
-| Subfinder | `asset.discovery.subdomains` | passive subdomain discovery |
-| Assetfinder | `asset.discovery.subdomains` | passive asset discovery |
-| Amass | `asset.discovery.subdomains` | passive DNS/asset enrichment |
-| Httpx | `web.verify` | HTTP service verification |
-| Nmap | `service.discovery` | service discovery |
-| Nuclei | `web.vulnerability_detection` | template-based candidate detection |
+## Install
 
-BELTU does not require every tool for the CLI, database, reasoning, reporting, or remote gateway to start.
+Clone the repository and install the user-local launcher:
 
-## Installation
+`git clone https://github.com/abdulrhmsnadel/beltu-agent.git`
 
-```bash
-cd ~/BELTU
-python3 -m venv .venv
-source .venv/bin/activate
-python -m ensurepip --upgrade
-python -m pip install -U pip setuptools wheel
-python -m pip install -e . --no-build-isolation
+`cd beltu-agent`
 
-beltu doctor --strict
-beltu status
-```
+`chmod +x BelTu-Agent.sh tests/test_beltu.sh`
 
-Configure `config/scope.yaml` with **only targets you are authorized to test**.
+`make test`
 
-## Local FreeToken AI
+`make install-local`
 
-The repository contains:
+If `~/.local/bin` is not in your `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile, reload it, and check `beltu --version`.
 
-- `scripts/install_local_ai.sh`
-- `scripts/start_local_ai.sh`
-- `scripts/stop_local_ai.sh`
-- local provider under `src/beltu/brain/llm/provider.py`
-- GPU/VRAM-aware resource governance under `src/beltu/execution/resource_governor.py`
+A system-wide launcher can be installed with `make install`; this may require `sudo`. It does not automatically install scanner dependencies.
 
-Example:
+## Usage
 
-```bash
-chmod +x scripts/install_local_ai.sh scripts/start_local_ai.sh scripts/stop_local_ai.sh
+`beltu --help`
 
-export BELTU_FREETOKEN_MODEL=/absolute/path/to/local/model
-scripts/install_local_ai.sh
-scripts/start_local_ai.sh
+`beltu --version`
 
-curl http://127.0.0.1:8000/v1/models
-beltu llm
-beltu resources
-```
+`beltu -t example.com -d --dry-run --no-install`
 
-For a truly air-gapped deployment, preload FreeToken source and local model weights before disconnecting the host. BELTU's provider rejects non-loopback FreeToken endpoints, so the reasoning path does not silently fall back to a cloud URL.
+`beltu -t example.com -a --rate-limit 3 --threads 5`
 
-## CLI reference
+`beltu -t example.com -v --rate-limit 3 --threads 5`
 
-| Command | Use | Example |
-|---|---|---|
-| `beltu target <domain>` | validate scope and register target | `beltu target example.com` |
-| `beltu targets` | list registered targets | `beltu targets` |
-| `beltu hunt <domain>` | start the persistent BELTU reasoning lifecycle | `beltu hunt example.com` |
-| `beltu status` | show active scans and local resource/AI state | `beltu status` |
-| `beltu resources` | show CPU/RAM/GPU/FreeToken telemetry | `beltu resources` |
-| `beltu llm` | show local reasoning configuration | `beltu llm` |
-| `beltu tools` | show tool adapters and approval metadata | `beltu tools` |
-| `beltu remote` | start the authenticated Mobile Command Center gateway | `beltu remote` |
-| `beltu remote-doctor` | validate remote environment | `beltu remote-doctor` |
-| `beltu doctor --strict` | run static release/security checks | `beltu doctor --strict` |
-| `beltu report <scan-id>` | generate report packages | `beltu report 1` |
-| `beltu findings <scan-id>` | show finding candidates | `beltu findings 1` |
-| `beltu approval ...` | inspect/resolve persistent approvals | `beltu approval --help` |
+`beltu -t example.com -f --install`
 
-Advanced lifecycle and intelligence commands remain available under the `scan`, `asset-inventory`, `surface-rank`, `api-inventory`, `auth-inventory`, `authz-inventory`, `business-workflows`, `capability-rank`, and related command groups.
+`beltu --resume recon_example.com_20260911_010000 -f`
 
-## Mobile Command Center
+Modes: `-d` discovery, `-a` URL collection, `-v` vulnerability checks, `-f` full pipeline. Options include `--threads`, `--rate-limit`, `--timeout`, `--retries`, `--max-injection-targets`, `--config`, `--resume`, `--install`, `--no-install`, `--dry-run`, and `--verbose`.
 
-The Flutter source is under `mobile/` and provides:
+The combinations `--dry-run --install` and `--install --no-install` are rejected. `--dry-run` validates options and prints the proposed stages without running scanner binaries or installing dependencies. Dependency installation uses the system package manager and may invoke `sudo`, so request it explicitly.
 
-- Dashboard with asset and CPU/RAM/GPU/FreeToken telemetry
-- Agent Chat
-- Approval queue
-- Live WebSocket events
-- Workspace file browser
-- Markdown/JSON/TXT preview
-- Report-package browsing and download
+## Configuration
 
-For an Android emulator:
+Copy `config/beltu.conf.example` and pass it with `--config FILE`. Supported keys are `THREADS`, `RATE_LIMIT`, `TIMEOUT`, `RETRIES`, `MAX_INJECTION_TARGETS`, `NO_INSTALL`, and `VERBOSE`. Command-line values take precedence over configuration values.
 
-```bash
-cd mobile
-flutter pub get
-flutter run --dart-define=BELTU_BASE_URL=http://10.0.2.2:8765
-```
+## Output layout
 
-A physical phone needs a trusted reachable server. Do not expose the unauthenticated development gateway to the public internet.
+Each run creates a `recon_<target>_<timestamp>/` folder containing:
 
-## Remote gateway
+- `metadata/`: target, configuration, stage state, and machine-readable `run.json`.
+- `subdomains/`: raw discovery results, target-domain subdomains, HTTPX JSONL, and live hosts.
+- `urls/`: raw provider/crawler results, normalized URLs, parameterized URLs, endpoints, and parameter names.
+- `vulnerabilities/`: scanner result files.
+- `logs/tools/`: command, stdout, stderr, duration, and exit-code logs.
+- `report.md`, `report.html`, and `report.pdf` when report dependencies are available.
 
-Set secure environment variables before starting:
+Resume a run with `beltu --resume <run-directory> -f`; completed stages are skipped.
 
-```bash
-export BELTU_REMOTE_USER=beltu
-export BELTU_REMOTE_PASSWORD='choose-a-strong-password'
-export BELTU_REMOTE_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
-export BELTU_REMOTE_HOST=127.0.0.1
-export BELTU_REMOTE_PORT=8765
+## Development checks
 
-beltu remote
-```
+`bash -n BelTu-Agent.sh`
 
-Health check:
+`shellcheck -x BelTu-Agent.sh tests/test_beltu.sh`
 
-```bash
-curl http://127.0.0.1:8765/health
-```
+`make test`
 
-## Workspace
+The GitHub Actions workflows run Bash checks and the test suite on pushes and pull requests.
 
-Each scan keeps artifacts under:
+## Safety notes
 
-```text
-data/targets/<target>/scan-<id>/
-├── reports/
-├── findings/
-├── evidence/
-├── data/
-└── agent/
-```
-
-Reports are separated from agent activity, execution history, evidence, structured intelligence, and finding packages so an engagement can be reconstructed later.
-
-## Resource governance
-
-BELTU samples BELTU CPU/RSS, host pressure, NVIDIA VRAM/utilization when available, and FreeToken process statistics. The resource governor converts this telemetry into conservative per-tool limits and can apply CPU affinity restrictions to BELTU-managed child processes under pressure.
-
-This is adaptive throttling, not a claim of an exact 30% OS-level quota for every third-party process.
-
-## Project release
-
-BELTU 1.1.0 keeps the persistent reasoning architecture and adds local FreeToken inference, adaptive GPU/CPU resource telemetry, simplified CLI entry points, mobile remote operations, and expanded reporting/workspace support.
-
-All use is intended for systems and targets for which you have explicit authorization.
+BelTu-Agent does not guarantee complete coverage. Scanner output can contain false positives, false negatives, stale URLs, or tool errors. A zero-finding report is not proof that a target is secure. Use conservative rate limits and only assess authorized domains.

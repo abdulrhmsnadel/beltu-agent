@@ -2,7 +2,7 @@
 #
 # ============================================================================
 # BelTu-Agent — Recon & Vulnerability Scanning Orchestrator
-# Version: 1.1.2
+# Version: 1.1.3
 # Purpose: Authorized security testing / bug bounty recon automation ONLY.
 # ============================================================================
 
@@ -10,12 +10,12 @@ set -uo pipefail
 IFS=$'\n\t'
 
 SCRIPT_NAME="BelTu-Agent"
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 SCRIPT_COMMAND="beltu"
 
 # Resolve the project directory once so installed/local tool binaries can be
 # discovered reliably even when the launcher is invoked from another cwd.
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 TOOL_BIN_DIR="${BELTU_TOOL_BIN:-$SCRIPT_DIR/.beltu-tools/bin}"
 LOCAL_CARGO_BIN_DIR="${BELTU_CARGO_BIN:-$SCRIPT_DIR/.beltu-tools/cargo/bin}"
 GOBIN_DIR="${GOBIN:-${GOPATH:-$HOME/go}/bin}"
@@ -44,7 +44,6 @@ export PATH="$TOOL_BIN_DIR:$GOBIN_DIR:$CARGO_BIN_DIR:$HOME/.local/bin:$PATH:/usr
 # -----------------------------------------------------------------------------
 TARGET=""
 TARGET_RAW=""
-SCOPE_FILE=""
 CONFIG_FILE=""
 RESUME_DIR=""
 OUTDIR=""
@@ -95,7 +94,6 @@ CLI_VERBOSE_SET=0
 
 # Paths initialized after the run directory exists.
 TMP_DIR=""
-LOG_ROOT=""
 TOOL_LOG_ROOT=""
 STATE_FILE=""
 RUN_JSON=""
@@ -151,9 +149,9 @@ Legacy modes (kept compatible):
   -v                    Automated vulnerability checks
   -f                    Full pipeline: -d -> -a -> -v -> reports
 
-Target / scope:
+Target boundary:
   -t, --target DOMAIN  Bare domain/subdomain only, e.g. example.com
-      --scope FILE     Scope allowlist: exact domains and *.example.com
+  Only the target and its subdomains are accepted; external hosts are discarded.
 
 Execution:
       --threads N      Concurrency hint (default: $THREADS)
@@ -175,20 +173,13 @@ General:
 
 Examples:
   $SCRIPT_COMMAND -t example.com -d
-  $SCRIPT_COMMAND -t example.com -a --scope scope.txt
+  $SCRIPT_COMMAND -t example.com -a
   $SCRIPT_COMMAND -t example.com -v --rate-limit 3 --threads 5
-  $SCRIPT_COMMAND -t example.com -f --scope scope.txt
+  $SCRIPT_COMMAND -t example.com -f
   $SCRIPT_COMMAND -t example.com -f --install
   $SCRIPT_COMMAND --resume recon_example.com_20260911_010000
   $SCRIPT_COMMAND -t example.com -d --dry-run
 
-Scope format:
-  example.com
-  *.example.com
-  api.example.com
-
-A wildcard entry covers subdomains only; list the apex domain separately if
-it is explicitly in scope.
 EOF_USAGE
 }
 
@@ -274,7 +265,7 @@ validate_runtime_options() {
 }
 
 # -----------------------------------------------------------------------------
-# Target and scope validation
+# Target-domain boundary validation
 # -----------------------------------------------------------------------------
 sanitize_domain() {
     local raw="$1" clean="$1"
@@ -305,71 +296,12 @@ sanitize_domain() {
     printf '%s' "${clean,,}"
 }
 
-validate_scope_pattern() {
-    local raw="$1" pattern
-    pattern="$(trim_ws "$raw")"
-    [[ -z "$pattern" ]] && return 0
-    [[ "${pattern:0:1}" == '#' ]] && return 0
-
-    if [[ "$pattern" == \*.* ]]; then
-        pattern="${pattern#*.}"
-        [[ -n "$pattern" ]] || return 1
-    elif [[ "$pattern" == \** ]]; then
-        return 1
-    fi
-
-    sanitize_domain "$pattern" >/dev/null 2>&1
+target_domain_match() {
+    local host="${1,,}" target="${TARGET,,}"
+    host="${host%.}"
+    [[ -n "$host" && -n "$target" ]] || return 1
+    [[ "$host" == "$target" || "$host" == *."$target" ]]
 }
-
-scope_pattern_match() {
-    local host="$1" pattern="$2" suffix
-    host="${host,,}"
-    pattern="${pattern,,}"
-    if [[ "$pattern" == \*.* ]]; then
-        suffix="${pattern#*.}"
-        [[ -n "$suffix" ]] || return 1
-        [[ "$host" == *."$suffix" && "$host" != "$suffix" ]]
-        return
-    fi
-    [[ "$host" == "$pattern" ]]
-}
-
-is_in_scope() {
-    local host="$1" line pattern
-    [[ -z "$SCOPE_FILE" ]] && return 0
-    [[ -r "$SCOPE_FILE" ]] || return 1
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        pattern="$(trim_ws "${line%%#*}")"
-        [[ -z "$pattern" ]] && continue
-        scope_pattern_match "$host" "$pattern" && return 0
-    done < "$SCOPE_FILE"
-    return 1
-}
-
-validate_scope_file() {
-    local line num=0 pattern
-    [[ -z "$SCOPE_FILE" ]] && return 0
-    [[ -f "$SCOPE_FILE" ]] || { err "Scope file not found: $SCOPE_FILE"; return 1; }
-    [[ -r "$SCOPE_FILE" ]] || { err "Scope file is not readable: $SCOPE_FILE"; return 1; }
-
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        num=$((num + 1))
-        pattern="$(trim_ws "${line%%#*}")"
-        [[ -z "$pattern" ]] && continue
-        if ! validate_scope_pattern "$pattern"; then
-            err "Invalid scope entry at line $num: '$pattern'"
-            return 1
-        fi
-    done < "$SCOPE_FILE"
-
-    if ! is_in_scope "$TARGET"; then
-        err "Target '$TARGET' is outside the provided scope."
-        err "Add the apex domain or an appropriate wildcard entry to scope.txt."
-        return 1
-    fi
-    ok "Scope validated: $TARGET is in scope"
-}
-
 host_from_url() {
     local url="$1" rest authority hostport host
     case "$url" in
@@ -417,7 +349,6 @@ init_output_tree() {
         "$OUTDIR/logs/tools"; do
         ensure_dir "$dir" || return 1
     done
-    LOG_ROOT="$OUTDIR/logs"
     TOOL_LOG_ROOT="$OUTDIR/logs/tools"
     STATE_FILE="$OUTDIR/metadata/state.tsv"
     RUN_JSON="$OUTDIR/metadata/run.json"
@@ -521,7 +452,6 @@ write_config_snapshot() {
         printf 'BelTu-Agent %s\n' "$SCRIPT_VERSION"
         printf 'target=%s\n' "$TARGET"
         printf 'mode=%s\n' "$(mode_label)"
-        printf 'scope=%s\n' "${SCOPE_FILE:-none}"
         printf 'threads=%s\n' "$THREADS"
         printf 'rate_limit=%s\n' "$RATE_LIMIT"
         printf 'timeout=%s\n' "$TIMEOUT"
@@ -560,7 +490,6 @@ write_run_json() {
         printf '  "mode": "%s",\n' "$(json_escape "$(mode_label)")"
         printf '  "status": "%s",\n' "$(json_escape "$status")"
         printf '  "dry_run": %s,\n' "$DRY_RUN"
-        printf '  "scope_file": "%s",\n' "$(json_escape "$SCOPE_FILE")"
         printf '  "output_directory": "%s",\n' "$(json_escape "$OUTDIR")"
         printf '  "duration_seconds": %s,\n' "$duration"
         printf '  "modules": {\n'
@@ -571,7 +500,7 @@ write_run_json() {
         printf '  },\n'
         printf '  "statistics": {\n'
         printf '    "subdomains_discovered": %s,\n' "$(count_lines "$OUTDIR/subdomains/all_subdomains.txt")"
-        printf '    "scoped_subdomains": %s,\n' "$(count_lines "$OUTDIR/subdomains/scoped_subdomains.txt")"
+        printf '    "target_subdomains": %s,\n' "$(count_lines "$OUTDIR/subdomains/target_subdomains.txt")"
         printf '    "live_hosts": %s,\n' "$(count_lines "$OUTDIR/subdomains/live_hosts.txt")"
         printf '    "urls": %s,\n' "$(count_lines "$OUTDIR/urls/all_urls.txt")"
         printf '    "parameterized_urls": %s,\n' "$(count_lines "$OUTDIR/urls/urls_with_params.txt")"
@@ -601,10 +530,6 @@ setup_new_run() {
     RUN_ID="$(basename "$OUTDIR")"
     init_output_tree || return 1
     printf '%s\n' "$TARGET" > "$OUTDIR/metadata/target.txt" || return 1
-    if [[ -n "$SCOPE_FILE" ]]; then
-        cp -- "$SCOPE_FILE" "$OUTDIR/metadata/scope.txt" || { err "Unable to snapshot scope file."; return 1; }
-        SCOPE_FILE="$OUTDIR/metadata/scope.txt"
-    fi
     STARTED_EPOCH="$(date +%s)"
     STARTED_ISO="$(utc_iso)"
     ORIGINAL_STARTED_ISO="$STARTED_ISO"
@@ -626,9 +551,6 @@ load_resume_run() {
     RUN_ID="$(basename "$run_dir")"
     init_output_tree || return 1
 
-    if [[ -z "$SCOPE_FILE" && -f "$run_dir/metadata/scope.txt" ]]; then
-        SCOPE_FILE="$run_dir/metadata/scope.txt"
-    fi
 
     ORIGINAL_STARTED_ISO="$(sed -n 's/^[[:space:]]*"started_at":[[:space:]]*"\([^"]*\)".*/\1/p' "$run_dir/metadata/run.json" 2>/dev/null | head -n 1 || true)"
     local previous_duration previous_runs
@@ -677,20 +599,20 @@ load_config_file() {
 
 preprocess_short_clusters() {
     local arg cluster ch
-    local -a out=()
+    local -a normalized=()
     for arg in "$@"; do
         if [[ "$arg" =~ ^-[davf]{2,}$ ]]; then
             cluster="${arg:1}"
             while [[ -n "$cluster" ]]; do
                 ch="${cluster:0:1}"
                 cluster="${cluster:1}"
-                out+=("-$ch")
+                normalized+=("-$ch")
             done
         else
-            out+=("$arg")
+            normalized+=("$arg")
         fi
     done
-    printf '%s\n' "${out[@]}"
+    printf '%s\n' "${normalized[@]}"
 }
 
 parse_args() {
@@ -705,8 +627,6 @@ parse_args() {
             -a) MODE_URL=1 ;;
             -v) MODE_VULN=1 ;;
             -f) MODE_FULL=1 ;;
-            --scope) shift; (($# > 0)) || { err "--scope requires a file."; return 1; }; SCOPE_FILE="$1" ;;
-            --scope=*) SCOPE_FILE="${arg#*=}" ;;
             --config) shift; (($# > 0)) || { err "--config requires a file."; return 1; }; CONFIG_FILE="$1" ;;
             --config=*) CONFIG_FILE="${arg#*=}" ;;
             --resume) shift; (($# > 0)) || { err "--resume requires a directory."; return 1; }; RESUME_DIR="$1" ;;
@@ -1172,9 +1092,11 @@ run_tool_output_arg() {
     log "Running $tool"
 
     if (( DRY_RUN == 1 )); then
-        printf 'DRY-RUN: ' >> "$stdout_log"
-        printf '%q ' "${cmd[@]}" >> "$stdout_log"
-        printf '\n' >> "$stdout_log"
+        {
+            printf 'DRY-RUN: '
+            printf '%q ' "${cmd[@]}"
+            printf '\n'
+        } >> "$stdout_log"
         rc=0
     else
         # IMPORTANT: result_file is written by the tool via its -o option.
@@ -1203,7 +1125,11 @@ run_tool_named_output() {
     log "Running $tool"
 
     if (( DRY_RUN == 1 )); then
-        printf 'DRY-RUN: ' >> "$stdout_log"; printf '%q ' "${cmd[@]}" >> "$stdout_log"; printf '\n' >> "$stdout_log"
+        {
+            printf 'DRY-RUN: '
+            printf '%q ' "${cmd[@]}"
+            printf '\n'
+        } >> "$stdout_log"
         rc=0
     else
         if "${cmd[@]}" >"$stdout_log" 2>"$stderr_log"; then rc=0; else rc=$?; fi
@@ -1231,7 +1157,11 @@ run_tool_stdin() {
     log "Running $tool"
 
     if (( DRY_RUN == 1 )); then
-        printf 'DRY-RUN: ' >> "$stdout_log"; printf '%q ' "${cmd[@]}" >> "$stdout_log"; printf '< %q\n' "$input_file" >> "$stdout_log"
+        {
+            printf 'DRY-RUN: '
+            printf '%q ' "${cmd[@]}"
+            printf '< %q\n' "$input_file"
+        } >> "$stdout_log"
         rc=0
     else
         if "${cmd[@]}" <"$input_file" >"$result_file" 2>"$stderr_log"; then rc=0; else rc=$?; fi
@@ -1264,7 +1194,7 @@ normalize_one_url() {
     fi
 
     if [[ "$hostpart" == \[*\]:* ]]; then
-        # Keep bracketed IPv6 authorities intact; scope checks remain hostname-oriented.
+        # Keep bracketed IPv6 authorities intact; target-boundary checks remain hostname-oriented.
         hostport="$hostpart"
     elif [[ "$hostpart" == *:* ]]; then
         host="${hostpart%%:*}"
@@ -1289,54 +1219,39 @@ normalize_one_url() {
     printf '%s://%s%s%s\n' "$scheme" "$userinfo" "$hostpart" "$suffix"
 }
 
-scope_domain_regex() {
-    local domain="$1"
-    domain=${domain//./\\.}
-    printf '%s' "$domain"
+target_domain_regex() {
+    printf '%s' "$1" | sed 's/\./\\./g'
 }
 
-build_katana_scope_file() {
-    local output="$1" line pattern domain escaped
+build_katana_target_regex_file() {
+    local output="$1" escaped
     : > "$output" || return 1
-    [[ -n "$SCOPE_FILE" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        pattern="$(trim_ws "${line%%#*}")"
-        [[ -z "$pattern" ]] && continue
-        if [[ "$pattern" == \*.* ]]; then
-            domain="${pattern#*.}"
-            escaped="$(scope_domain_regex "$domain")"
-            # One or more labels before the scoped suffix => wildcard does not include apex.
-            printf '^https?://([A-Za-z0-9-]+\\.)+%s(?::[0-9]+)?(?:[/#?]|$)' "$escaped" >> "$output"
-        else
-            escaped="$(scope_domain_regex "$pattern")"
-            printf '^https?://%s(?::[0-9]+)?(?:[/#?]|$)' "$escaped" >> "$output"
-        fi
-        printf '\n' >> "$output"
-    done < "$SCOPE_FILE"
+    escaped="$(target_domain_regex "$TARGET")" || return 1
+    printf '^https?://%s(:[0-9]+)?([/#?].*)?$\n' "$escaped" > "$output" || return 1
+    printf '^https?://([A-Za-z0-9-]+\.)+%s(:[0-9]+)?([/#?].*)?$\n' "$escaped" >> "$output"
 }
 
-filter_in_scope_url_list() {
+filter_target_url_list() {
     local input="$1" output="$2" line host
     : > "$output"
     while IFS= read -r line || [[ -n "$line" ]]; do
         host="$(host_from_url "$(trim_ws "$line")")"
         [[ -n "$host" ]] || continue
-        is_in_scope "$host" && printf '%s\n' "$(trim_ws "$line")" >> "$output"
+        target_domain_match "$host" && printf '%s\n' "$(trim_ws "$line")" >> "$output"
     done < "$input"
     sort -u "$output" -o "$output"
 }
 
-filter_scope_subdomains() {
+filter_target_subdomains() {
     local input="$1" output="$2" line host
     : > "$output"
     while IFS= read -r line || [[ -n "$line" ]]; do
         host="$(trim_ws "$line")"
         [[ -z "$host" ]] && continue
-        if is_in_scope "$host"; then printf '%s\n' "${host,,}" >> "$output"; fi
+        if target_domain_match "$host"; then printf '%s\n' "${host,,}" >> "$output"; fi
     done < "$input"
     sort -u "$output" -o "$output"
 }
-
 normalize_urls() {
     local input="$1" output="$2" line cleaned host normalized
     : > "$output"
@@ -1345,11 +1260,9 @@ normalize_urls() {
         [[ -z "$cleaned" ]] && continue
         normalized="$(normalize_one_url "$cleaned" 2>/dev/null || true)"
         [[ -z "$normalized" ]] && continue
-        if [[ -n "$SCOPE_FILE" ]]; then
-            host="$(host_from_url "$normalized")"
-            [[ -n "$host" ]] || continue
-            is_in_scope "$host" || continue
-        fi
+        host="$(host_from_url "$normalized")"
+        [[ -n "$host" ]] || continue
+        target_domain_match "$host" || continue
         printf '%s\n' "$normalized" >> "$output"
     done < "$input"
     sort -u "$output" -o "$output"
@@ -1383,12 +1296,12 @@ tool_timeout_minutes() {
 module_deep_enum() {
     local module="deep_enum" start end rc=0 failures=0
     local out_dir="$OUTDIR/subdomains" all_subs="$OUTDIR/subdomains/all_subdomains.txt"
-    local scoped_subs="$OUTDIR/subdomains/scoped_subdomains.txt" seed_file="$TMP_DIR/deep_seed.txt"
+    local target_subs="$OUTDIR/subdomains/target_subdomains.txt" seed_file="$TMP_DIR/deep_seed.txt"
     local count live_count enum_minutes
     local enum_successes=0 enum_failures=0 probe_successes=0 probe_failures=0 total_successes=0 total_failures=0
 
     : > "$out_dir/subfinder.txt"; : > "$out_dir/assetfinder.txt"; : > "$out_dir/amass.txt"
-    : > "$out_dir/all_subdomains.txt"; : > "$out_dir/scoped_subdomains.txt"
+    : > "$out_dir/all_subdomains.txt"; : > "$out_dir/target_subdomains.txt"
     : > "$out_dir/live_hosts.txt"; : > "$out_dir/httpx_results.jsonl"
     printf '%s\n' "$TARGET" > "$seed_file"
 
@@ -1414,13 +1327,12 @@ module_deep_enum() {
         | tr '[:upper:]' '[:lower:]' | sort -u > "$all_subs" || :
 
     count="$(count_lines "$all_subs")"; ok "Unique subdomains/seed hosts: $count"
-    filter_scope_subdomains "$all_subs" "$scoped_subs"
-    [[ -n "$SCOPE_FILE" ]] && ok "In-scope hosts: $(count_lines "$scoped_subs")"
+    filter_target_subdomains "$all_subs" "$target_subs"
 
     if require_tool httpx; then
         local input_count
-        input_count="$(count_lines "$scoped_subs")"
-        local -a args=(-l "$scoped_subs" -silent -status-code -title -tech-detect -json -t "$THREADS" -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retries "$RETRIES")
+        input_count="$(count_lines "$target_subs")"
+        local -a args=(-l "$target_subs" -silent -status-code -title -tech-detect -json -t "$THREADS" -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retries "$RETRIES")
         if run_tool_output_arg "$module" httpx "$out_dir/httpx_results.jsonl" "$input_count" "${args[@]}"; then probe_successes=$((probe_successes + 1)); else probe_failures=$((probe_failures + 1)); fi
         if [[ -s "$out_dir/httpx_results.jsonl" ]]; then
             if command -v jq >/dev/null 2>&1 && jq -e . >/dev/null 2>&1 < "$out_dir/httpx_results.jsonl"; then
@@ -1458,32 +1370,21 @@ module_url_crawl() {
     start="$(date +%s)"; URL_STATUS="running"; write_state "$module" running "$start" 0 0 "" || return 1
     hdr "URL Crawling & Parameter Mining"
 
+    : > "$crawl_input"
     if [[ -s "$live_hosts" ]]; then
-        if [[ -n "$SCOPE_FILE" ]]; then
-            filter_in_scope_url_list "$live_hosts" "$crawl_input"
-        else
-            cp -- "$live_hosts" "$crawl_input"
-        fi
-    else
+        filter_target_url_list "$live_hosts" "$crawl_input"
+    fi
+    if [[ ! -s "$crawl_input" ]]; then
         printf 'https://%s\n' "$TARGET" > "$crawl_input"
-        warn "No live-host file available; falling back to https://$TARGET"
+        warn "No target-domain live-host seed available; falling back to https://$TARGET"
     fi
-    if [[ -n "$SCOPE_FILE" && ! -s "$crawl_input" ]]; then
-        err "No in-scope crawl seeds are available."
-        URL_STATUS="failed"
-        end="$(date +%s)"
-        write_state "$module" "$URL_STATUS" "$start" "$end" 1 "no_in_scope_crawl_seeds"
-        return 1
-    fi
-    local crawl_count="$(count_lines "$crawl_input")"
+    local crawl_count
+    crawl_count="$(count_lines "$crawl_input")"
 
     if require_tool katana; then
-        local katana_scope_file="$TMP_DIR/katana_scope.regex"
-        [[ -n "$SCOPE_FILE" ]] && build_katana_scope_file "$katana_scope_file"
-        local -a args=(-list "$crawl_input" -silent -jc -kf all -c "$THREADS" -p 1 -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retry "$RETRIES")
-        if [[ -n "$SCOPE_FILE" ]]; then
-            args+=(-cs "$katana_scope_file")
-        fi
+        local katana_target_file="$TMP_DIR/katana_target.regex"
+        build_katana_target_regex_file "$katana_target_file" || return 1
+        local -a args=(-list "$crawl_input" -silent -jc -kf all -c "$THREADS" -p 1 -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retry "$RETRIES" -cs "$katana_target_file")
         if run_tool_output_arg "$module" katana "$url_dir/katana.txt" "$crawl_count" "${args[@]}"; then cat "$url_dir/katana.txt" >> "$all_raw"; else failures=$((failures + 1)); fi
     else warn "Skipping katana: unavailable."; failures=$((failures + 1)); fi
 
@@ -1568,15 +1469,17 @@ module_vuln_scan() {
     printf 'https://%s\n' "$TARGET" > "$scan_targets"
     [[ -s "$live_hosts" ]] && cp -- "$live_hosts" "$scan_targets"
 
-    if [[ -n "$SCOPE_FILE" ]]; then
-        local scoped="$TMP_DIR/vuln_targets_scoped.txt" host url
-        : > "$scoped"
-        while IFS= read -r url || [[ -n "$url" ]]; do
-            host="$(host_from_url "$url")"
-            [[ -n "$host" ]] && is_in_scope "$host" && printf '%s\n' "$url" >> "$scoped"
-        done < "$scan_targets"
-        sort -u "$scoped" -o "$scoped"
-        cp -- "$scoped" "$scan_targets"
+    local target_file="$TMP_DIR/vuln_targets_target_domain.txt" host url
+    : > "$target_file"
+    while IFS= read -r url || [[ -n "$url" ]]; do
+        host="$(host_from_url "$url")"
+        [[ -n "$host" ]] && target_domain_match "$host" && printf '%s\n' "$url" >> "$target_file"
+    done < "$scan_targets"
+    sort -u "$target_file" -o "$target_file"
+    if [[ -s "$target_file" ]]; then
+        cp -- "$target_file" "$scan_targets"
+    else
+        printf 'https://%s\n' "$TARGET" > "$scan_targets"
     fi
 
     start="$(date +%s)"; VULN_STATUS="running"; write_state "$module" running "$start" 0 0 "" || return 1
@@ -1585,7 +1488,8 @@ module_vuln_scan() {
     NUCLEI_STATUS="skipped"; KXSS_STATUS="skipped"; DALFOX_STATUS="skipped"; COMMIX_STATUS="skipped"
 
     if require_tool nuclei; then
-        local -a args=(-l "$scan_targets" -silent -severity info,low,medium,high,critical -jsonl -c "$THREADS" -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retries "$RETRIES")
+        local severity_list='info,low,medium,high,critical'
+        local -a args=(-l "$scan_targets" -silent -severity "$severity_list" -jsonl -c "$THREADS" -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retries "$RETRIES")
         if run_tool_output_arg "$module" nuclei "$vuln_dir/nuclei_results.jsonl" "$(count_lines "$scan_targets")" "${args[@]}"; then
             NUCLEI_STATUS="completed"; nuclei_count="$(count_lines "$vuln_dir/nuclei_results.jsonl")"; ok "nuclei potential findings: $nuclei_count"
         else
@@ -1596,17 +1500,30 @@ module_vuln_scan() {
     fi
 
     if [[ -s "$param_urls" ]]; then
-        local param_count="$(count_lines "$param_urls")"
+        local param_count
+        param_count="$(count_lines "$param_urls")"
         if require_tool kxss; then
             if run_tool_stdin "$module" kxss "$param_urls" "$vuln_dir/kxss_results.txt" "$param_count"; then KXSS_STATUS="completed"; else KXSS_STATUS="failed"; failures=$((failures + 1)); fi
         else KXSS_STATUS="skipped"; warn "Skipping kxss: unavailable."; failures=$((failures + 1)); fi
 
         if require_tool dalfox; then
-            local -a args=(scan file "$param_urls" --silence --no-color --rate-limit "$RATE_LIMIT" --timeout "$TIMEOUT")
-            local dalfox_help="$(dalfox scan --help 2>&1 || true)"
+            local -a args=(scan -i file "$param_urls" --silence --no-color --rate-limit "$RATE_LIMIT" --timeout "$TIMEOUT")
+            local dalfox_help
+            dalfox_help="$(dalfox scan --help 2>&1 || true)"
             if [[ "$dalfox_help" == *"--workers"* ]]; then args+=(--workers "$THREADS"); elif [[ "$dalfox_help" == *"--concurrency"* ]]; then args+=(--concurrency "$THREADS"); fi
             if [[ "$dalfox_help" == *"--retries"* ]]; then args+=(--retries "$RETRIES"); fi
-            if run_tool_output_arg "$module" dalfox "$vuln_dir/dalfox_results.txt" "$param_count" "${args[@]}"; then DALFOX_STATUS="completed"; else DALFOX_STATUS="failed"; failures=$((failures + 1)); fi
+            if run_tool_output_arg "$module" dalfox "$vuln_dir/dalfox_results.txt" "$param_count" "${args[@]}"; then
+                DALFOX_STATUS="completed"
+            else
+                local dalfox_rc=$?
+                if (( dalfox_rc == 1 )); then
+                    DALFOX_STATUS="completed"
+                    ok "Dalfox completed and reported findings (exit code 1)."
+                else
+                    DALFOX_STATUS="failed"
+                    failures=$((failures + 1))
+                fi
+            fi
         else DALFOX_STATUS="skipped"; warn "Skipping dalfox: unavailable."; failures=$((failures + 1)); fi
 
         if require_tool commix; then
@@ -1658,6 +1575,7 @@ build_report_html() {
     pandoc "$OUTDIR/report.md" -o "$OUTDIR/report.html" >"$TOOL_LOG_ROOT/report_pandoc.stdout.log" 2>"$TOOL_LOG_ROOT/report_pandoc.stderr.log"
 }
 
+# shellcheck disable=SC2016
 generate_report() {
     local module="report" start end rc=0
     local report_md="$OUTDIR/report.md" report_pdf="$OUTDIR/report.pdf"
@@ -1700,7 +1618,7 @@ generate_report() {
         printf '## Attack Surface\n\n'
         printf '| Artifact | Evidence | Count |\n|---|---|---:|\n'
         printf '| Subdomains | `subdomains/all_subdomains.txt` | %s |\n' "$sub_count"
-        printf '| In-scope subdomains | `subdomains/scoped_subdomains.txt` | %s |\n' "$(count_lines "$OUTDIR/subdomains/scoped_subdomains.txt")"
+        printf '| Target-domain subdomains | `subdomains/target_subdomains.txt` | %s |\n' "$(count_lines "$OUTDIR/subdomains/target_subdomains.txt")"
         printf '| Live hosts | `subdomains/live_hosts.txt` | %s |\n' "$live_count"
         printf '| URLs | `urls/all_urls.txt` | %s |\n' "$url_count"
         printf '| Parameterized URLs | `urls/urls_with_params.txt` | %s |\n' "$param_count"
@@ -1759,7 +1677,7 @@ generate_report() {
         printf '\n'
 
         printf '## Verification Guidance\n\n'
-        printf 'Automated detections are candidates for manual investigation. Verify scope, reproduce the behavior, establish security impact, and confirm the final severity before disclosure or remediation.\n\n'
+        printf 'Automated detections are candidates for manual investigation. Verify target ownership and authorization, reproduce the behavior, establish security impact, and confirm the final severity before disclosure or remediation.\n\n'
 
         printf '## Disclaimer\n\n'
         printf 'BelTu-Agent does not guarantee complete coverage. Tool output can contain false positives, false negatives, stale historical data, or scanner errors. A zero-finding result is not proof that a target is secure.\n'
@@ -1857,21 +1775,15 @@ main() {
         fi
         load_resume_run || return 1
         init_temp || return 1
-        validate_scope_file || return 1
         write_config_snapshot || return 1
     else
         [[ -n "$TARGET_RAW" ]] || { err "Target domain is required (-t <domain>)."; usage; return 1; }
         TARGET="$(sanitize_domain "$TARGET_RAW")" || return 1
-        validate_scope_file || return 1
         init_temp || return 1
         setup_new_run || return 1
     fi
 
-    if [[ -n "$SCOPE_FILE" ]]; then
-        ok "Scope allowlist active: $SCOPE_FILE"
-    else
-        warn "No --scope file supplied. Run only against explicitly authorized targets and obey the program scope/rate limits."
-    fi
+    warn "Built-in target-domain boundary is active: only $TARGET and its subdomains are accepted. Test only domains you are authorized to assess."
 
     if (( DRY_RUN == 1 )); then
         # Dry-run must not execute dependency binaries or installers. It only

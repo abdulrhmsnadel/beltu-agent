@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.3
+
+- Remove the optional runtime allowlist interface and apply a consistent built-in target-domain boundary to discovered assets, crawler seeds, historical URLs, and vulnerability-scanner targets.
+- Fix Dalfox file-input syntax and treat exit code 1 as a successful scan that reported findings; input/runtime errors remain failures.
+- Align the README with the Bash CLI actually present in this repository.
+- Add a Shell CI workflow and configure CodeQL to analyze GitHub Actions workflows.
+
 ## 1.1.2
 
 Focused installability/runtime-entrypoint fix.
@@ -15,12 +22,12 @@ Focused installability/runtime-entrypoint fix.
 - Fixed `run_tool_output_arg` so tool-owned `-o` output is separated from captured stdout/stderr.
 - Prevented `--dry-run` from validating binaries or installing dependencies; `--dry-run --install` is rejected.
 - Rejected conflicting `--install --no-install` combinations.
-- Enforced scope before crawling and added Katana native scope restrictions where supported, while retaining post-filtering.
+- Enforced target-domain filtering before crawling and added Katana native target restrictions where supported, while retaining post-filtering.
 - Clarified that request-rate and concurrency settings are per-tool where supported.
 - Fixed deep-enum status classification so a target seed cannot make a fully failed enumeration look successful.
 - Added bounded validation for numeric runtime controls.
 - Preserved accumulated run duration across resumes and added resume count metadata.
-- Added tests for dry-run/install conflicts, scope enforcement, failure classification, bounds, resume timing, and tool output handling.
+- Added tests for dry-run/install conflicts, target-domain filtering, failure classification, bounds, resume timing, and tool output handling.
 - Strengthened current CLI compatibility checks for core tools without introducing a new architecture.
 
 ## 1.1.0
@@ -28,7 +35,7 @@ Focused installability/runtime-entrypoint fix.
 - Added module-specific dependency mapping.
 - Added tool identity/version/basic-execution validation.
 - Added explicit dependency installation via `--install` and `--no-install`.
-- Added scope allowlist support.
+- Added target-host validation and filtering.
 - Added rate-limit, timeout, retry, thread, and commix target controls.
 - Added module state and resumable runs.
 - Added structured per-tool logs.
