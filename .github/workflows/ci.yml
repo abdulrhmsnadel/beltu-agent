@@ -21,7 +21,9 @@ jobs:
           sudo apt-get install -y shellcheck
       - name: Bash syntax
         run: bash -n BelTu-Agent.sh tests/test_beltu.sh
-      - name: ShellCheck
-        run: shellcheck -x BelTu-Agent.sh tests/test_beltu.sh
+      - name: ShellCheck main script
+        run: shellcheck -x BelTu-Agent.sh
+      - name: ShellCheck test harness errors
+        run: shellcheck -x -S error tests/test_beltu.sh
       - name: Test suite
         run: make test

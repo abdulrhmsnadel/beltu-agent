@@ -15,7 +15,7 @@ SCRIPT_COMMAND="beltu"
 
 # Resolve the project directory once so installed/local tool binaries can be
 # discovered reliably even when the launcher is invoked from another cwd.
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 TOOL_BIN_DIR="${BELTU_TOOL_BIN:-$SCRIPT_DIR/.beltu-tools/bin}"
 LOCAL_CARGO_BIN_DIR="${BELTU_CARGO_BIN:-$SCRIPT_DIR/.beltu-tools/cargo/bin}"
 GOBIN_DIR="${GOBIN:-${GOPATH:-$HOME/go}/bin}"
@@ -94,7 +94,6 @@ CLI_VERBOSE_SET=0
 
 # Paths initialized after the run directory exists.
 TMP_DIR=""
-LOG_ROOT=""
 TOOL_LOG_ROOT=""
 STATE_FILE=""
 RUN_JSON=""
@@ -350,7 +349,6 @@ init_output_tree() {
         "$OUTDIR/logs/tools"; do
         ensure_dir "$dir" || return 1
     done
-    LOG_ROOT="$OUTDIR/logs"
     TOOL_LOG_ROOT="$OUTDIR/logs/tools"
     STATE_FILE="$OUTDIR/metadata/state.tsv"
     RUN_JSON="$OUTDIR/metadata/run.json"
@@ -601,20 +599,20 @@ load_config_file() {
 
 preprocess_short_clusters() {
     local arg cluster ch
-    local -a out=()
+    local -a normalized=()
     for arg in "$@"; do
         if [[ "$arg" =~ ^-[davf]{2,}$ ]]; then
             cluster="${arg:1}"
             while [[ -n "$cluster" ]]; do
                 ch="${cluster:0:1}"
                 cluster="${cluster:1}"
-                out+=("-$ch")
+                normalized+=("-$ch")
             done
         else
-            out+=("$arg")
+            normalized+=("$arg")
         fi
     done
-    printf '%s\n' "${out[@]}"
+    printf '%s\n' "${normalized[@]}"
 }
 
 parse_args() {
@@ -1094,9 +1092,11 @@ run_tool_output_arg() {
     log "Running $tool"
 
     if (( DRY_RUN == 1 )); then
-        printf 'DRY-RUN: ' >> "$stdout_log"
-        printf '%q ' "${cmd[@]}" >> "$stdout_log"
-        printf '\n' >> "$stdout_log"
+        {
+            printf 'DRY-RUN: '
+            printf '%q ' "${cmd[@]}"
+            printf '\n'
+        } >> "$stdout_log"
         rc=0
     else
         # IMPORTANT: result_file is written by the tool via its -o option.
@@ -1125,7 +1125,11 @@ run_tool_named_output() {
     log "Running $tool"
 
     if (( DRY_RUN == 1 )); then
-        printf 'DRY-RUN: ' >> "$stdout_log"; printf '%q ' "${cmd[@]}" >> "$stdout_log"; printf '\n' >> "$stdout_log"
+        {
+            printf 'DRY-RUN: '
+            printf '%q ' "${cmd[@]}"
+            printf '\n'
+        } >> "$stdout_log"
         rc=0
     else
         if "${cmd[@]}" >"$stdout_log" 2>"$stderr_log"; then rc=0; else rc=$?; fi
@@ -1153,7 +1157,11 @@ run_tool_stdin() {
     log "Running $tool"
 
     if (( DRY_RUN == 1 )); then
-        printf 'DRY-RUN: ' >> "$stdout_log"; printf '%q ' "${cmd[@]}" >> "$stdout_log"; printf '< %q\n' "$input_file" >> "$stdout_log"
+        {
+            printf 'DRY-RUN: '
+            printf '%q ' "${cmd[@]}"
+            printf '< %q\n' "$input_file"
+        } >> "$stdout_log"
         rc=0
     else
         if "${cmd[@]}" <"$input_file" >"$result_file" 2>"$stderr_log"; then rc=0; else rc=$?; fi
@@ -1370,7 +1378,8 @@ module_url_crawl() {
         printf 'https://%s\n' "$TARGET" > "$crawl_input"
         warn "No target-domain live-host seed available; falling back to https://$TARGET"
     fi
-    local crawl_count="$(count_lines "$crawl_input")"
+    local crawl_count
+    crawl_count="$(count_lines "$crawl_input")"
 
     if require_tool katana; then
         local katana_target_file="$TMP_DIR/katana_target.regex"
@@ -1479,7 +1488,8 @@ module_vuln_scan() {
     NUCLEI_STATUS="skipped"; KXSS_STATUS="skipped"; DALFOX_STATUS="skipped"; COMMIX_STATUS="skipped"
 
     if require_tool nuclei; then
-        local -a args=(-l "$scan_targets" -silent -severity info,low,medium,high,critical -jsonl -c "$THREADS" -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retries "$RETRIES")
+        local severity_list='info,low,medium,high,critical'
+        local -a args=(-l "$scan_targets" -silent -severity "$severity_list" -jsonl -c "$THREADS" -rl "$RATE_LIMIT" -timeout "$TIMEOUT" -retries "$RETRIES")
         if run_tool_output_arg "$module" nuclei "$vuln_dir/nuclei_results.jsonl" "$(count_lines "$scan_targets")" "${args[@]}"; then
             NUCLEI_STATUS="completed"; nuclei_count="$(count_lines "$vuln_dir/nuclei_results.jsonl")"; ok "nuclei potential findings: $nuclei_count"
         else
@@ -1490,14 +1500,16 @@ module_vuln_scan() {
     fi
 
     if [[ -s "$param_urls" ]]; then
-        local param_count="$(count_lines "$param_urls")"
+        local param_count
+        param_count="$(count_lines "$param_urls")"
         if require_tool kxss; then
             if run_tool_stdin "$module" kxss "$param_urls" "$vuln_dir/kxss_results.txt" "$param_count"; then KXSS_STATUS="completed"; else KXSS_STATUS="failed"; failures=$((failures + 1)); fi
         else KXSS_STATUS="skipped"; warn "Skipping kxss: unavailable."; failures=$((failures + 1)); fi
 
         if require_tool dalfox; then
             local -a args=(scan -i file "$param_urls" --silence --no-color --rate-limit "$RATE_LIMIT" --timeout "$TIMEOUT")
-            local dalfox_help="$(dalfox scan --help 2>&1 || true)"
+            local dalfox_help
+            dalfox_help="$(dalfox scan --help 2>&1 || true)"
             if [[ "$dalfox_help" == *"--workers"* ]]; then args+=(--workers "$THREADS"); elif [[ "$dalfox_help" == *"--concurrency"* ]]; then args+=(--concurrency "$THREADS"); fi
             if [[ "$dalfox_help" == *"--retries"* ]]; then args+=(--retries "$RETRIES"); fi
             if run_tool_output_arg "$module" dalfox "$vuln_dir/dalfox_results.txt" "$param_count" "${args[@]}"; then
@@ -1563,6 +1575,7 @@ build_report_html() {
     pandoc "$OUTDIR/report.md" -o "$OUTDIR/report.html" >"$TOOL_LOG_ROOT/report_pandoc.stdout.log" 2>"$TOOL_LOG_ROOT/report_pandoc.stderr.log"
 }
 
+# shellcheck disable=SC2016
 generate_report() {
     local module="report" start end rc=0
     local report_md="$OUTDIR/report.md" report_pdf="$OUTDIR/report.pdf"
